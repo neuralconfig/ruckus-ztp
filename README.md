@@ -68,6 +68,39 @@ ztp-agent> help
 - `show ztp` - Show ZTP status
 - `chat` - Enter chat interface with AI agent
 
+## Testing
+
+For development and testing:
+
+1. Activate the virtual environment:
+   ```bash
+   ./activate_venv.sh
+   ```
+
+2. Verify the installation:
+   ```bash
+   ./test_installation.py
+   ```
+
+3. Run the ZTP agent:
+   ```bash
+   ztp-agent
+   ```
+
+4. Connect to a switch with default credentials:
+   ```
+   ztp-agent> config switch 192.168.1.1 super your-new-password
+   ```
+   This will automatically handle the password change on first login.
+
+5. Test LLDP discovery:
+   ```
+   ztp-agent> ztp enable
+   ztp-agent> show switches
+   ```
+
+See the [TESTING.md](TESTING.md) file for detailed testing procedures with real hardware.
+
 ### Chat Interface
 
 The chat interface allows you to interact with an AI agent that can perform network operations using natural language. Examples:
