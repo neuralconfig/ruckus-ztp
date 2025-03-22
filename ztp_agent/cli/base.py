@@ -38,10 +38,19 @@ class ZTPAgentCLI(cmd2.Cmd):
         super().__init__(allow_cli_args=False, allow_redirection=False, 
                          persistent_history_file=history_file)
         
-        # Remove some default commands we don't need
-        self.remove_command('edit')
-        self.remove_command('macro')
-        self.remove_command('shell')
+        # Disable some default commands we don't need
+        try:
+            # For newer versions of cmd2
+            self.remove_command('edit')
+            self.remove_command('macro')
+            self.remove_command('shell')
+        except (AttributeError, TypeError):
+            # For older versions of cmd2
+            # Just hide them in the help
+            if hasattr(self, 'hidden_commands'):
+                self.hidden_commands.extend(['edit', 'macro', 'shell'])
+            else:
+                self.hidden_commands = ['edit', 'macro', 'shell']
         
         # Set up agent and ZTP components
         self.ztp_enabled = False
