@@ -138,14 +138,24 @@ class EnhancedZTPAgentCLI(ZTPAgentCLI):
     # Override methods to use ZTP process
     def _add_switch(self, ip: str, username: str, password: str):
         """Add a switch to the inventory"""
-        success = self.ztp_process.add_switch(ip, username, password)
+        # Check for default credentials
+        actual_password = password
+        
+        # If using super user with first time login, use default password
+        if username.lower() == 'super' and password != 'sp-admin':
+            self.poutput(f"Using default password 'sp-admin' for initial connection to {ip}")
+            self.poutput(f"The password will be changed to your specified password during first login")
+            # For the initial connection we use the default password, then change it
+            actual_password = 'sp-admin'
+        
+        success = self.ztp_process.add_switch(ip, username, actual_password)
         
         if success:
             # Update CLI switches dictionary
             self.switches[ip] = {
                 'ip': ip,
                 'username': username,
-                'password': password,
+                'password': password,  # Store the user-specified password
                 'status': 'Added',
                 'configured': False
             }

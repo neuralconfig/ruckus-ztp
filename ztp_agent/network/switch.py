@@ -86,7 +86,13 @@ class SwitchOperation:
             
             # Wait for prompt
             time.sleep(1)
-            output = self.shell.recv(1000).decode('utf-8')
+            output = self.shell.recv(10000).decode('utf-8')
+            logger.debug(f"Initial output: {output}")
+            
+            # Check for first-time login password change prompt
+            if "Please change the password" in output or "Enter the new password" in output:
+                logger.info(f"First-time login detected for {self.ip}, handling password change")
+                return self._handle_first_time_login(output)
             
             # Check if we're at the command prompt
             if not re.search(r'[>#]', output.strip()):
@@ -121,6 +127,102 @@ class SwitchOperation:
             logger.error(f"Error connecting to switch {self.ip}: {e}", exc_info=True)
             self.disconnect()
             return False
+            
+    def _handle_first_time_login(self, initial_output: str) -> bool:
+        """
+        Handle first-time login password change prompt.
+        
+        Args:
+            initial_output: Initial output from the shell.
+            
+        Returns:
+            True if successfully handled password change, False otherwise.
+        """
+        try:
+            # Check where we are in the password change process
+            if "Enter the new password" not in initial_output:
+                # Wait for the new password prompt
+                self._wait_for_pattern("Enter the new password")
+            
+            # Send new password (reusing the provided password)
+            logger.debug("Sending new password")
+            self.shell.send(f"{self.password}\n")
+            time.sleep(1)
+            
+            # Wait for reconfirm prompt and send password again
+            self._wait_for_pattern("Enter the reconfirm password")
+            logger.debug("Sending reconfirm password")
+            self.shell.send(f"{self.password}\n")
+            time.sleep(1)
+            
+            # Wait for confirmation
+            output = self._wait_for_pattern("Password modified successfully")
+            if not output:
+                logger.error("Password change failed")
+                return False
+                
+            logger.info("Password changed successfully on first login")
+            
+            # Wait for command prompt
+            output = self._wait_for_pattern(r"[>#]")
+            
+            # Enter enable mode if needed
+            if '#' not in output:
+                logger.debug("Entering enable mode after password change")
+                self.shell.send("enable\n")
+                time.sleep(0.5)
+                
+                # Check if password is required
+                output = self.shell.recv(1000).decode('utf-8')
+                if 'Password:' in output:
+                    self.shell.send(f"{self.password}\n")
+                    time.sleep(0.5)
+                    output = self.shell.recv(1000).decode('utf-8')
+                
+                # Verify we're in enable mode
+                if '#' not in output:
+                    logger.error("Failed to enter enable mode after password change")
+                    self.disconnect()
+                    return False
+            
+            self.connected = True
+            logger.info(f"Successfully connected to switch {self.ip} after password change")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error handling first-time login: {e}", exc_info=True)
+            self.disconnect()
+            return False
+    
+    def _wait_for_pattern(self, pattern: str, timeout: int = 30) -> str:
+        """
+        Wait for a specific pattern in the output.
+        
+        Args:
+            pattern: Pattern to wait for (string or regex pattern).
+            timeout: Timeout in seconds.
+            
+        Returns:
+            Output received or empty string if timeout.
+        """
+        start_time = time.time()
+        buffer = ""
+        
+        while (time.time() - start_time) < timeout:
+            if self.shell.recv_ready():
+                chunk = self.shell.recv(1000).decode('utf-8')
+                buffer += chunk
+                
+                # Check if pattern is found
+                if isinstance(pattern, str) and pattern in buffer:
+                    return buffer
+                elif not isinstance(pattern, str) and re.search(pattern, buffer):
+                    return buffer
+            
+            time.sleep(0.1)
+        
+        logger.error(f"Timeout waiting for pattern: {pattern}")
+        return ""
     
     def disconnect(self) -> None:
         """Disconnect from the switch"""

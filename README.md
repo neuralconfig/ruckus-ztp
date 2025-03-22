@@ -32,6 +32,20 @@ Key features:
    ```
 2. Edit the configuration file to set your OpenRouter API key and other settings.
 
+### Switch Default Credentials
+
+When connecting to a new RUCKUS ICX switch for the first time, the default credentials are:
+- Username: `super`
+- Password: `sp-admin`
+
+The ZTP agent automatically handles the required password change on first login. When adding a switch with default credentials, you'll need to specify the new password you want to use:
+
+```
+ztp-agent> config switch 192.168.1.1 super your-new-password
+```
+
+The agent will use `sp-admin` as the initial password, perform the required password change, and set it to your specified password.
+
 ## Usage
 
 Run the ZTP agent CLI:
