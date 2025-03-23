@@ -3,8 +3,11 @@
 poll_interval = 60
 
 [network]
-# VLAN configuration
-default_vlan = 1
+# Base configuration file (contains VLAN definitions and other initial config)
+base_config_file = config/base_configuration.txt
+
+# VLAN configuration 
+# These values should match what's defined in the base configuration file
 management_vlan = 10
 wireless_vlans = 20, 30, 40
 
@@ -23,5 +26,8 @@ model = anthropic/claude-3-5-haiku
 # Default switch credentials
 default_username = admin
 default_password = password
+# Preferred password for 'super' user on initial login
+# This password will be set when connecting to a new switch with default credentials
+preferred_password = 
 # Command timeout in seconds
 timeout = 30

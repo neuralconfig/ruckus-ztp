@@ -8,8 +8,11 @@ This tool provides a network engineer-friendly command-line interface for automa
 
 Key features:
 - Command-line interface with tab completion and help system
-- Automatic device discovery using LLDP
-- Automated switch and AP configuration
+- Automatic device discovery using LLDP and L2 trace
+- Automated switch and AP configuration with management IP assignment from IP pool
+- Proper VLAN creation with spanning tree on all VLANs
+- Intelligent trunk port configuration with appropriate VLAN tagging
+- Support for RUCKUS ICX switch commands and syntax
 - Chat interface powered by AI for natural language configuration
 
 ## Installation
@@ -30,7 +33,12 @@ Key features:
    ```
    cp config/ztp_agent.ini.example ~/.ztp_agent.cfg
    ```
-2. Edit the configuration file to set your OpenRouter API key and other settings.
+2. Edit the configuration file to set:
+   - OpenRouter API key for the chat interface
+   - Base configuration file (contains VLAN creation and other initial config)
+   - Network settings including VLAN IDs (these should match the VLANs in the base config)
+   - IP pool for management addresses (e.g., `192.168.10.0/24`)
+   - Gateway for new devices
 
 ### Switch Default Credentials
 
@@ -63,10 +71,32 @@ ztp-agent> help
 - `config switch <ip> <username> <password>` - Add a switch to the inventory
 - `ztp enable` - Enable the ZTP process
 - `ztp disable` - Disable the ZTP process
+- `ztp discover <ip>` - Run a one-time network discovery on a specific switch
+- `vlan add <id> <name> <type>` - Add a VLAN (types: management, wireless, other)
+- `vlan load <file_path>` - Load VLANs from a CSV file
+- `vlan set-management <id>` - Set the management VLAN ID
 - `show switches` - Show configured switches
 - `show aps` - Show discovered APs
+- `show vlans` - Show configured VLANs
 - `show ztp` - Show ZTP status
 - `chat` - Enter chat interface with AI agent
+
+### Zero Touch Provisioning Process
+
+The ZTP process works as follows:
+
+1. Add a seed switch to the inventory using `config switch <ip> <username> <password>`
+2. Configure VLANs using `vlan add` or `vlan load`
+3. Enable the ZTP process with `ztp enable`
+4. The agent will automatically:
+   - Discover neighboring devices using LLDP and L2 trace
+   - Apply the base configuration (which creates VLANs with spanning tree and other initial config)
+   - Configure trunk ports between switches with appropriate VLAN tagging
+   - Configure AP ports with correct wireless VLAN tagging
+   - Assign management IPs from the configured IP pool
+   - Mark devices as configured once complete
+
+The process runs continuously in the background, periodically checking for new devices and ensuring proper configuration.
 
 ## Testing
 
@@ -116,18 +146,56 @@ The chat interface allows you to interact with an AI agent that can perform netw
 
 ```
 ztp_agent/
-├── cli/            # Command-line interface
-├── network/        # Network operations
-├── ztp/            # ZTP process
-├── agent/          # AI agent
-└── utils/          # Utilities
+├── cli/                      # Command-line interface
+│   └── commands/             # Command modules for different CLI functions
+├── network/                  # Network operations
+│   └── switch/               # Switch operations, organized by function
+│       ├── connection.py     # Core SSH connectivity
+│       ├── configuration.py  # Switch configuration operations
+│       ├── discovery.py      # Network discovery with LLDP
+│       └── enums.py          # Switch-related enumerations
+├── ztp/                      # ZTP process
+├── agent/                    # AI agent
+└── utils/                    # Utilities
 ```
+
+### Base Configuration File
+
+The base configuration file (`config/base_configuration.txt`) contains the initial configuration to be applied to each switch. This includes VLAN creation, spanning tree configuration, and any other common settings. The file format uses RUCKUS ICX CLI commands, with one command per line. Comments start with an exclamation mark (!).
+
+Example base configuration file:
+```
+! Management VLAN
+vlan 10 name Management
+spanning-tree 802-1w
+exit
+
+! Wireless VLANs
+vlan 20 name Wireless-20
+spanning-tree 802-1w
+exit
+
+vlan 30 name Wireless-30
+spanning-tree 802-1w
+exit
+
+! Global spanning tree settings
+spanning-tree
+spanning-tree 802-1w
+```
+
+You can customize this file to include any initial configuration you want to apply to all switches. This provides greater flexibility than hardcoding VLAN creation in the code.
 
 ### Extending the Tool
 
 To add new commands to the CLI:
-1. Edit `ztp_agent/cli/base.py`
-2. Add new command methods using the `@with_category` and `@with_argparser` decorators
+1. Either add new methods to an existing mixin in `ztp_agent/cli/commands/`
+2. Or create a new command mixin file in `ztp_agent/cli/commands/` and add it to the class inheritance in `ztp_agent/cli/base.py`
+3. Use the `@with_category` and `@with_argparser` decorators for command methods
+
+To add new switch functionality:
+1. Add methods to the appropriate file in `ztp_agent/network/switch/` based on the functionality
+2. If adding an entirely new category of functionality, create a new module file
 
 To add new AI agent capabilities:
 1. Add new tools in `ztp_agent/agent/tools.py`
