@@ -759,10 +759,12 @@ class DirectZTPProcess:
             # Log the LLDP output for debugging
             logger.debug(f"LLDP output: {lldp_output}")
             
-            # Parse neighbors - very simplified for this script
+            # Parse neighbors - improved to capture more details
             port_pattern = r'Local port: (\d+/\d+/\d+)'
             system_name_pattern = r'System name\s+: "([^"]+)"'
             port_desc_pattern = r'Port description\s+: "([^"]+)"'
+            system_desc_pattern = r'System description\s+: "([^"]+)"'
+            mgmt_ip_pattern = r'Management address: ([0-9\.]+)'
             
             # Find all port entries
             port_matches = list(re.finditer(port_pattern, lldp_output))
@@ -771,6 +773,9 @@ class DirectZTPProcess:
             wireless_vlans = self.config.get('network', {}).get('wireless_vlans', [20, 30, 40])
             wireless_vlans_str = ', '.join(str(v) for v in wireless_vlans)
             switch_op._debug_message(f"Wireless VLANs that will be configured: {wireless_vlans_str}", color="blue")
+            
+            # Keep track of discovered switches to add to inventory
+            discovered_switches = []
             
             # If no ports found, let the user know
             if not port_matches:
@@ -798,27 +803,67 @@ class DirectZTPProcess:
                 port_desc_match = re.search(port_desc_pattern, port_section)
                 port_desc = port_desc_match.group(1) if port_desc_match else ""
                 
+                # Try to find system description
+                system_desc_match = re.search(system_desc_pattern, port_section)
+                system_desc = system_desc_match.group(1) if system_desc_match else ""
+                
+                # Try to find management IP
+                mgmt_ip_match = re.search(mgmt_ip_pattern, port_section)
+                mgmt_ip = mgmt_ip_match.group(1) if mgmt_ip_match else ""
+                
                 switch_op._debug_message(f"Port {port} neighbor details:", color="yellow")
                 switch_op._debug_message(f"  - System name: {system_name}", color="yellow")
                 switch_op._debug_message(f"  - Port description: {port_desc}", color="yellow")
+                switch_op._debug_message(f"  - System description: {system_desc}", color="yellow")
+                switch_op._debug_message(f"  - Management IP: {mgmt_ip}", color="yellow")
                 
                 # Determine device type based on name or description
                 is_switch = "ICX" in system_name
-                is_ap = "AP" in system_name or "ap" in port_desc.lower()
+                is_ap = (
+                    "AP" in system_name or 
+                    "ap" in port_desc.lower() or 
+                    ("Ruckus" in system_desc and "Wireless" in system_desc)
+                )
                 
                 # Configure the port based on device type
                 if is_switch:
                     logger.info(f"Configuring switch-to-switch trunk port {port} for neighbor {system_name}")
                     switch_op._debug_message(f"Device is a switch - configuring port {port} as trunk", color="blue")
                     self._configure_switch_port(switch_op, port)
+                    
+                    # If we have the management IP, add this switch to our list of discovered switches
+                    if mgmt_ip and mgmt_ip not in self.inventory['switches']:
+                        switch_op._debug_message(f"Discovered new switch at IP {mgmt_ip}", color="green")
+                        discovered_switches.append({
+                            'ip': mgmt_ip,
+                            'name': system_name
+                        })
+                        
                 elif is_ap:
-                    logger.info(f"Configuring AP port {port} for neighbor {system_name}")
-                    switch_op._debug_message(f"Device is an AP - configuring port {port} with wireless VLANs", color="blue")
+                    logger.info(f"Configuring AP port {port} for neighbor - detected as Ruckus AP")
+                    switch_op._debug_message(f"Device is a Ruckus AP - configuring port {port} with wireless VLANs", color="blue")
                     self._configure_ap_port(switch_op, port, wireless_vlans)
+                    
+                    # Save AP details in inventory if we have an IP
+                    if mgmt_ip and mgmt_ip not in self.inventory['aps']:
+                        switch_op._debug_message(f"Discovered AP at IP {mgmt_ip}", color="green")
+                        self.inventory['aps'][mgmt_ip] = {
+                            'ip': mgmt_ip,
+                            'name': system_name,
+                            'description': system_desc,
+                            'switch_ip': switch_op.ip,
+                            'switch_port': port
+                        }
                 else:
                     logger.info(f"Unknown device type on port {port}: {system_name}, {port_desc}")
                     switch_op._debug_message(f"Unknown device type - skipping port {port}", color="red")
             
+            # Add discovered switches to inventory and queue them for configuration
+            if discovered_switches:
+                switch_op._debug_message(f"Found {len(discovered_switches)} new switches to add to inventory", color="blue")
+                for switch_info in discovered_switches:
+                    self._add_discovered_switch(switch_info['ip'], switch_info['name'])
+                
             logger.info(f"Neighbors discovered and configured for switch {switch_op.ip}")
             switch_op._debug_message(f"All neighbors discovered and configured for switch {switch_op.ip}", color="green")
             return True
@@ -910,6 +955,22 @@ class DirectZTPProcess:
             if switch_op.channel.recv_ready():
                 interface_response = switch_op.channel.recv(4096).decode('utf-8', errors='replace')
                 switch_op._debug_message(f"Interface mode response: {interface_response}", color="green")
+                
+            # Clear any existing VLAN configuration
+            switch_op._debug_message(f"Clearing any existing VLAN configuration", color="yellow")
+            switch_op.channel.send("vlan-config purge-all\n")
+            time.sleep(1)
+            if switch_op.channel.recv_ready():
+                purge_response = switch_op.channel.recv(4096).decode('utf-8', errors='replace')
+                switch_op._debug_message(f"VLAN purge response: {purge_response}", color="green")
+                
+            # Set the port to dual mode
+            switch_op._debug_message(f"Setting port to dual mode", color="yellow")
+            switch_op.channel.send("dual-mode\n")
+            time.sleep(1)
+            if switch_op.channel.recv_ready():
+                dual_mode_response = switch_op.channel.recv(4096).decode('utf-8', errors='replace')
+                switch_op._debug_message(f"Dual mode response: {dual_mode_response}", color="green")
             
             # Configure management VLAN as untagged
             mgmt_vlan = self.config.get('network', {}).get('management_vlan', 10)
@@ -937,6 +998,22 @@ class DirectZTPProcess:
                 stp_response = switch_op.channel.recv(4096).decode('utf-8', errors='replace')
                 switch_op._debug_message(f"Spanning tree response: {stp_response}", color="green")
             
+            # Enable PoE if not already enabled (default is enabled)
+            switch_op._debug_message(f"Ensuring PoE is enabled", color="yellow")
+            switch_op.channel.send("inline power\n")
+            time.sleep(1)
+            if switch_op.channel.recv_ready():
+                poe_response = switch_op.channel.recv(4096).decode('utf-8', errors='replace')
+                switch_op._debug_message(f"PoE response: {poe_response}", color="green")
+                
+            # Set port speed to auto-negotiate
+            switch_op._debug_message(f"Setting port speed to auto", color="yellow")
+            switch_op.channel.send("speed-duplex auto\n")
+            time.sleep(1)
+            if switch_op.channel.recv_ready():
+                speed_response = switch_op.channel.recv(4096).decode('utf-8', errors='replace')
+                switch_op._debug_message(f"Speed setting response: {speed_response}", color="green")
+            
             # Exit interface config
             switch_op._debug_message(f"Exiting interface configuration", color="yellow")
             switch_op.channel.send("exit\n")
@@ -961,6 +1038,43 @@ class DirectZTPProcess:
             error_msg = f"Error configuring AP port {port}: {e}"
             logger.error(error_msg)
             switch_op._debug_message(error_msg, color="red")
+            return False
+    
+    def _add_discovered_switch(self, ip, name):
+        """Add a discovered switch to inventory for later configuration"""
+        
+        # Skip if switch is already in inventory
+        if ip in self.inventory['switches']:
+            logger.info(f"Switch {ip} ({name}) already in inventory, skipping")
+            return False
+        
+        logger.info(f"Adding discovered switch {ip} ({name}) to inventory")
+        
+        try:
+            # Add to inventory with minimal information
+            self.inventory['switches'][ip] = {
+                'ip': ip,
+                'username': "super",  # Default username for Ruckus ICX switches
+                'password': "sp-admin",  # Default password for first-time login
+                'preferred_password': self.config.get('switch_password', "Ruckus123!"),  # Use same password as seed switch
+                'model': "Unknown",  # Will be updated when we connect
+                'serial': "Unknown",  # Will be updated when we connect
+                'hostname': name,
+                'status': 'Discovered',
+                'configured': False,
+                'base_config_applied': False,
+                'neighbors': {},
+                'ports': {}
+            }
+            
+            # Try to connect to the switch and gather more info
+            logger.info(f"Attempting to connect to discovered switch {ip}")
+            
+            # Add the switch to be configured on the next loop iteration
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error adding discovered switch {ip}: {e}", exc_info=True)
             return False
     
     def _save_configuration(self, switch_op):
@@ -1023,6 +1137,12 @@ def parse_args():
                       help='IP address of seed switch')
     parser.add_argument('--password', required=True,
                       help='Preferred password to set')
+    parser.add_argument('--username', default='super',
+                      help='Username for switch login (default: super)')
+    parser.add_argument('--initial-password', default='sp-admin',
+                      help='Initial password for first-time login (default: sp-admin)')
+    parser.add_argument('--discover-switches', action='store_true',
+                      help='Discover and configure neighboring switches')
     parser.add_argument('--debug', action='store_true',
                       help='Enable debug mode')
     
@@ -1232,12 +1352,18 @@ def main():
     # Create ZTP process
     ztp_process = DirectZTPProcess(config)
     
+    # Store passwords in config for discovered switches to use
+    config['switch_password'] = args.password
+    config['switch_username'] = args.username
+    config['switch_initial_password'] = args.initial_password
+    config['discover_switches'] = args.discover_switches
+    
     # Add seed switch
     logger.info(f"Adding seed switch {args.ip}")
     success = ztp_process.add_switch(
         ip=args.ip,
-        username="super",  # Always use 'super' for RUCKUS ICX switches
-        password="sp-admin",  # Use the default password for first login
+        username=args.username,  # Username from command line
+        password=args.initial_password,  # Initial password from command line
         preferred_password=args.password,  # Password to change to
         debug=True,
         debug_callback=debug_callback
