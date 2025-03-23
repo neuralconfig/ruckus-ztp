@@ -292,7 +292,8 @@ def apply_base_config(self, base_config: str) -> bool:
             return False
         
         # Log that we're applying base configuration
-        logger.info("Applying base configuration to switch")
+        logger.info(f"Applying base configuration to switch (length: {len(base_config)})")
+        logger.info(f"Base config content: {base_config[:500]}...")  # Log first 500 chars
         if self.debug and self.debug_callback:
             self.debug_callback("Applying base configuration", color="yellow")
         

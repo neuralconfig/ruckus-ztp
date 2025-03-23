@@ -1,3 +1,7 @@
+!logging
+logging console 
+logging cli-command
+
 ! Management VLAN
 vlan 10 name Management
 spanning-tree 802-1w
@@ -21,6 +25,7 @@ vlan 50 name Data
 spanning-tree 802-1w
 exit
 
-! Global spanning tree settings
-spanning-tree
+vlan 60 name Voice
 spanning-tree 802-1w
+exit
+

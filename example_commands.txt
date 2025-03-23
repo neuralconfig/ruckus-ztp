@@ -1,0 +1,95 @@
+ICX8200-C08PF Router#show lldp ne
+Lcl Port Chassis ID      Port ID         Port Description              System Name   
+1/1/1    94b3.4f30.4788 94b3.4f30.478e  GigabitEthernet1/1/7         ICX8200-C08PF Router
+1/1/4    00e6.3a3b.a410 00e6.3a3b.a410  eth0                         R350
+1/1/5    3845.3b3c.db36 3845.3b3c.db36  GigabitEthernet1/1/1         ICX8200-C08PF Router
+1/1/8    94b3.4f2f.842a 94b3.4f2f.843e  2.5GigabitEthernet1/1/21     Office-8200
+ICX8200-C08PF Router#
+
+ICX8200-C08PF Router#show lldp neighbors detail ports ethernet 1/1/5
+Local port: 1/1/5
+  Neighbor: 3845.3b3c.db36, TTL 94 seconds
+  + Chassis ID (MAC address): 3845.3b3c.db36
+  + Port ID (MAC address): 3845.3b3c.db36
+  + Time to live: 120 seconds
+  + System name         : "ICX8200-C08PF Router"
+  + Port description    : "GigabitEthernet1/1/1"
+  + System description    : "Ruckus Wireless, Inc. ICX8200-C08PF-POE, IronWare Version 10.0.10f_cd1T253"
+  + System capabilities : bridge, router
+    Enabled capabilities: bridge, router
+  + 802.3 MAC/PHY          : auto-negotiation enabled
+    Advertised capabilities: 10BaseT-HD, 10BaseT-FD, 100BaseTX-HD,
+                             100BaseTX-FD, 1000BaseT-HD, 1000BaseT-FD
+    Operational MAU type   : 1000BaseT-FD
+  + 802.3 Power via MDI: PSE port, power enabled, class 0
+    Power Pair         : A (not controllable)
+  + Link aggregation: not capable
+  + Maximum frame size: 1522 octets
+  + Port VLAN ID: 1
+  + Management address (IPv4): 0.0.0.0
+
+ICX8200-C08PF Router#
+
+
+ICX8200-C08PF Router#show lldp neighbors detail ports ethernet 1/1/4
+Local port: 1/1/4
+  Neighbor: 00e6.3a3b.a410, TTL 115 seconds
+  + Chassis ID (MAC address): 00e6.3a3b.a410
+  + Port ID (MAC address): 00e6.3a3b.a410
+  + Time to live: 120 seconds
+  + System name         : "R350"
+  + System description    : "Ruckus R350 Multimedia Hotzone Wireless AP/SW Version: 7.0.0.400.6554"
+  + System capabilities : bridge, WLAN access point, router
+    Enabled capabilities: bridge
+  + Management address (IPv4): 172.16.128.13
+  + Port description    : "eth0"
+  + Link aggregation: capable, but not aggregated
+  + 802.3 MAC/PHY          : auto-negotiation enabled
+    Advertised capabilities: 10BaseT-HD, 10BaseT-FD, 100BaseTX-HD,
+                             100BaseTX-FD, fdxPause, fdxAPause, 1000BaseT-FD
+    Operational MAU type   : 1000BaseT-FD
+
+ICX8200-C08PF Router#
+
+
+ICX8200-C08PF Router#trace-l2 show
+Vlan 1 L2 topology was probed 7 sec ago, # of paths: 3
+path 1 from e1/1/5, 1 hops:
+  hop   input  output IP and/or MAC address       microsec   comment                hostname
+  1    e1/1/1         172.16.128.16 3845.3b3c.db36    2606 STP                      "ICX8200-C08PF Router"
+path 2 from e1/1/1, 1 hops:
+  hop   input  output IP and/or MAC address       microsec   comment                hostname
+  1    e1/1/7         172.16.128.14 94b3.4f30.4788    2788 STP                      "ICX8200-C08PF Router"
+path 3 from e1/1/8, 1 hops:
+  hop   input  output IP and/or MAC address       microsec   comment                hostname
+  1   e1/1/21         172.16.128.1 94b3.4f2f.842a     2896                          Office-8200
+ICX8200-C08PF Router#
+
+ICX8200-C08PF Router#sho version
+  Copyright (c) Ruckus Networks, Inc. All rights reserved.
+    UNIT 1: compiled on Dec 29 2024 at 21:41:29 labeled as RDR10010f_cd1
+      (107018432 bytes) from Primary RDR10010f_cd1.bin (UFI)
+        SW: Version 10.0.10f_cd1T253 
+      Compressed Primary Boot Code size = 2097664, Version:10.2.09T255 (rdu1029)
+       Compiled on Thu Jan  1 00:00:00 1970
+
+  HW: Stackable ICX8200-C08PF-POE
+==========================================================================
+UNIT 1: SL 1: ICX8200-C08PF POE 8-port Management Module
+      Serial  #:FNS4303U055
+      Software Package: ICX8200_L3_SOFT_PACKAGE   
+      Current License: 2X10GR  
+      P-ASIC  0: type 9826, rev 01  Chip 98DX3501
+==========================================================================
+UNIT 1: SL 2: ICX8200-2x10G 2-port 20G Module
+==========================================================================
+ 1500 MHz ARMv8.2 Cortex-A55 processor 857 MHz bus
+    8 MB boot flash memory
+    8 GB code flash memory
+    4 GB DRAM
+STACKID 1  system uptime is 24 minute(s) 38 second(s) 
+The system started at 19:22:05 GMT+00 Sat Mar 22 2025
+
+The system : started=warm start   reloaded=by "reload"
+                                                                  
+ICX8200-C08PF Router#

@@ -10,7 +10,7 @@ Key features:
 - Command-line interface with tab completion and help system
 - Automatic device discovery using LLDP and L2 trace
 - Automated switch and AP configuration with management IP assignment from IP pool
-- Proper VLAN creation with spanning tree on all VLANs
+- Customizable base configuration file for initial switch setup (VLANs, spanning tree, etc.)
 - Intelligent trunk port configuration with appropriate VLAN tagging
 - Support for RUCKUS ICX switch commands and syntax
 - Chat interface powered by AI for natural language configuration
@@ -86,9 +86,10 @@ ztp-agent> help
 The ZTP process works as follows:
 
 1. Add a seed switch to the inventory using `config switch <ip> <username> <password>`
-2. Configure VLANs using `vlan add` or `vlan load`
-3. Enable the ZTP process with `ztp enable`
-4. The agent will automatically:
+2. Customize the base configuration file at `config/base_configuration.txt` if needed
+3. Update the config file with management VLAN and wireless VLANs that match what's in the base config
+4. Enable the ZTP process with `ztp enable`
+5. The agent will automatically:
    - Discover neighboring devices using LLDP and L2 trace
    - Apply the base configuration (which creates VLANs with spanning tree and other initial config)
    - Configure trunk ports between switches with appropriate VLAN tagging
@@ -97,6 +98,33 @@ The ZTP process works as follows:
    - Mark devices as configured once complete
 
 The process runs continuously in the background, periodically checking for new devices and ensuring proper configuration.
+
+### Base Configuration File
+
+The base configuration file (`config/base_configuration.txt`) contains the initial configuration applied to each newly discovered switch. This includes VLAN creation, spanning tree settings, and any other global settings. The file uses standard RUCKUS ICX CLI syntax and allows for comments (lines starting with '!').
+
+Example:
+```
+! Management VLAN
+vlan 10 name Management
+spanning-tree 802-1w
+exit
+
+! Wireless VLANs
+vlan 20 name Wireless-20
+spanning-tree 802-1w
+exit
+
+vlan 30 name Wireless-30
+spanning-tree 802-1w
+exit
+
+! Global spanning tree settings
+spanning-tree
+spanning-tree 802-1w
+```
+
+This approach provides flexibility to customize the initial configuration for all switches without modifying code.
 
 ## Testing
 
