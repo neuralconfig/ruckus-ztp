@@ -1,0 +1,31 @@
+!logging
+logging console 
+logging cli-command
+
+! Management VLAN
+vlan 10 name Management
+spanning-tree 802-1w
+exit
+
+! Wireless VLANs
+vlan 20 name Wireless-20
+spanning-tree 802-1w
+exit
+
+vlan 30 name Wireless-30
+spanning-tree 802-1w
+exit
+
+vlan 40 name Wireless-40
+spanning-tree 802-1w
+exit
+
+! Other VLANs if needed
+vlan 50 name Data
+spanning-tree 802-1w
+exit
+
+vlan 60 name Voice
+spanning-tree 802-1w
+exit
+
