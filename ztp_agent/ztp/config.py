@@ -95,17 +95,23 @@ def _load_base_config(network_config: Dict[str, Any]) -> None:
     # Expand path
     base_config_file = os.path.expanduser(base_config_file)
     
+    # Print absolute path for debugging
+    abs_path = os.path.abspath(base_config_file)
+    logger.info(f"Looking for base configuration file at: {abs_path}")
+    
     # If file exists, load it
-    if os.path.exists(base_config_file):
+    if os.path.exists(abs_path):
         try:
-            with open(base_config_file, 'r') as f:
-                network_config['base_config'] = f.read()
-            logger.info(f"Loaded base configuration from {base_config_file}")
+            with open(abs_path, 'r') as f:
+                content = f.read()
+                network_config['base_config'] = content
+                logger.info(f"Loaded base configuration ({len(content)} bytes) from {abs_path}")
         except Exception as e:
-            logger.error(f"Error loading base configuration from {base_config_file}: {e}", exc_info=True)
+            logger.error(f"Error loading base configuration from {abs_path}: {e}", exc_info=True)
             logger.warning("Using empty base configuration")
+            network_config['base_config'] = ''
     else:
-        logger.warning(f"Base configuration file {base_config_file} not found, using empty base configuration")
+        logger.warning(f"Base configuration file {abs_path} not found, using empty base configuration")
         network_config['base_config'] = ''
 
 def _validate_ip_config(network_config: Dict[str, Any]) -> None:

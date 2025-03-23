@@ -469,6 +469,7 @@ class ZTPProcess:
                     mgmt_mask = "255.255.255.0"  # Default mask
                 
                 # STEP 1: Apply base configuration (which includes VLAN creation with spanning tree)
+                logger.info(f"Sending base config to switch (length: {len(self.base_config)})")
                 success = switch_op.apply_base_config(self.base_config)
                 
                 if not success:
