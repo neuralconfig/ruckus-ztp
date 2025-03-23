@@ -119,7 +119,8 @@ class ChatInterface:
             switch_operations[ip] = SwitchOperation(
                 ip=ip,
                 username=switch_info.get('username'),
-                password=switch_info.get('password')
+                password=switch_info.get('password'),
+                preferred_password=switch_info.get('preferred_password', switch_info.get('password'))
             )
         
         return switch_operations

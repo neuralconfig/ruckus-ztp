@@ -4,24 +4,41 @@ CLI framework for ZTP Agent with network engineer-friendly interface
 import cmd2
 import os
 import sys
-import re
-from cmd2 import with_argparser, with_category
-import argparse
-from typing import List, Dict, Any, Optional
+from dataclasses import dataclass
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.styles import Style
 
-# Define command categories
-CMD_CATEGORY_CONFIG = "Configuration Commands"
-CMD_CATEGORY_SHOW = "Show Commands"
-CMD_CATEGORY_ZTP = "ZTP Commands"
-CMD_CATEGORY_CHAT = "Chat Interface Commands"
+# Import command mixins
+from ztp_agent.cli.commands.switch_commands import SwitchCommandsMixin, DEFAULT_USERNAME, DEFAULT_PASSWORD
+from ztp_agent.cli.commands.vlan_commands import VlanCommandsMixin, VLAN_TYPE_MANAGEMENT, VLAN_TYPE_WIRELESS, VLAN_TYPE_OTHER
+from ztp_agent.cli.commands.ztp_commands import ZTPCommandsMixin
+from ztp_agent.cli.commands.show_commands import ShowCommandsMixin
+from ztp_agent.cli.commands.chat_commands import ChatCommandsMixin
+from ztp_agent.cli.commands.misc_commands import MiscCommandsMixin
 
 
-class ZTPAgentCLI(cmd2.Cmd):
+@dataclass
+class VLAN:
+    """VLAN definition class"""
+    id: int
+    name: str
+    type: str
+    description: str = ""
+    
+    def __str__(self) -> str:
+        return f"{self.id:<5} {self.name:<20} {self.type:<10} {self.description}"
+
+
+class ZTPAgentCLI(cmd2.Cmd, 
+                 SwitchCommandsMixin, 
+                 VlanCommandsMixin, 
+                 ZTPCommandsMixin,
+                 ShowCommandsMixin,
+                 ChatCommandsMixin,
+                 MiscCommandsMixin):
     """ZTP Agent Command Line Interface"""
     
     prompt = "ztp-agent> "
@@ -29,14 +46,18 @@ class ZTPAgentCLI(cmd2.Cmd):
     ====================================
      RUCKUS ZTP Agent CLI
     ====================================
-    Type 'help' or '?' for available commands.
+    Type 'quickhelp' for a command summary.
+    Type 'help' or '?' for detailed command information.
     """
+    
+    # Reference to VLAN class for the mixins to use
+    VLAN = VLAN
     
     def __init__(self):
         # History file in user's home directory
         history_file = os.path.expanduser('~/.ztp_agent_history')
         super().__init__(allow_cli_args=False, allow_redirection=False, 
-                         persistent_history_file=history_file)
+                        persistent_history_file=history_file)
         
         # Disable some default commands we don't need
         try:
@@ -57,215 +78,48 @@ class ZTPAgentCLI(cmd2.Cmd):
         self.switches = {}  # Will store discovered switches
         self.aps = {}       # Will store discovered APs
         
+        # Initialize credentials
+        self.default_credentials = {
+            'username': DEFAULT_USERNAME,
+            'password': DEFAULT_PASSWORD,
+            'preferred_password': None  # Will be set by the user
+        }
+        
+        # Initialize VLAN management
+        self.vlans = {}  # Dictionary of VLAN ID to VLAN object
+        self.default_management_vlan_id = 10
+        
         # Initialize agent (to be implemented)
         self.agent = None
         
+        # Debug mode
+        self.debug_mode = False
+        
         # Configure command settings
         self.default_category = 'General Commands'
-
-    #
-    # Configuration Commands
-    #
-    config_parser = argparse.ArgumentParser(description='Configure ZTP agent')
-    config_subparsers = config_parser.add_subparsers(dest='config_command')
-    
-    # Switch config subcommand
-    switch_parser = config_subparsers.add_parser('switch', help='Configure switch')
-    switch_parser.add_argument('ip', help='Switch IP address')
-    switch_parser.add_argument('username', help='Switch username')
-    switch_parser.add_argument('password', help='Switch password')
-    
-    @with_category(CMD_CATEGORY_CONFIG)
-    @with_argparser(config_parser)
-    def do_config(self, args):
-        """Configure ZTP agent settings"""
-        if not args.config_command:
-            self.do_help('config')
+        
+    def debug_callback(self, message: str, color: str = "yellow") -> None:
+        """
+        Callback for debug messages from switch operations
+        
+        Args:
+            message: Message to display
+            color: Color to use (default: yellow)
+        """
+        if not self.debug_mode:
             return
             
-        if args.config_command == 'switch':
-            self._add_switch(args.ip, args.username, args.password)
-    
-    def _add_switch(self, ip: str, username: str, password: str):
-        """Add a switch to the inventory"""
-        # Validate IP address
-        if not self._validate_ip(ip):
-            self.perror(f"Invalid IP address: {ip}")
-            return
-            
-        # Store switch info (would connect and validate in real implementation)
-        self.switches[ip] = {
-            'ip': ip,
-            'username': username,
-            'password': password,
-            'status': 'Added',
-            'configured': False
+        # Use ANSI color codes
+        colors = {
+            "yellow": "\033[93m",  # Yellow
+            "red": "\033[91m",     # Red
+            "green": "\033[92m",   # Green
+            "blue": "\033[94m",    # Blue
+            "reset": "\033[0m"     # Reset
         }
         
-        self.poutput(f"Switch {ip} added to inventory")
-    
-    def _validate_ip(self, ip: str) -> bool:
-        """Validate IPv4 address format"""
-        pattern = re.compile(r'^(\d{1,3}\.){3}\d{1,3}$')
-        if not pattern.match(ip):
-            return False
-        
-        # Check each octet is within range
-        octets = ip.split('.')
-        for octet in octets:
-            if int(octet) > 255:
-                return False
-                
-        return True
-
-    #
-    # ZTP Commands
-    #
-    ztp_parser = argparse.ArgumentParser(description='ZTP operations')
-    ztp_subparsers = ztp_parser.add_subparsers(dest='ztp_command')
-    
-    # ZTP enable/disable commands
-    ztp_subparsers.add_parser('enable', help='Enable ZTP process')
-    ztp_subparsers.add_parser('disable', help='Disable ZTP process')
-    
-    @with_category(CMD_CATEGORY_ZTP)
-    @with_argparser(ztp_parser)
-    def do_ztp(self, args):
-        """Zero Touch Provisioning operations"""
-        if not args.ztp_command:
-            self.do_help('ztp')
-            return
-            
-        if args.ztp_command == 'enable':
-            self._enable_ztp()
-        elif args.ztp_command == 'disable':
-            self._disable_ztp()
-    
-    def _enable_ztp(self):
-        """Enable ZTP process"""
-        if not self.switches:
-            self.perror("No switches configured. Add at least one switch using 'config switch' command")
-            return
-            
-        self.ztp_enabled = True
-        self.poutput("ZTP process enabled")
-        self.poutput("Starting discovery process...")
-        # Here you would start your actual ZTP process
-    
-    def _disable_ztp(self):
-        """Disable ZTP process"""
-        self.ztp_enabled = False
-        self.poutput("ZTP process disabled")
-
-    #
-    # Show Commands
-    #
-    show_parser = argparse.ArgumentParser(description='Show information')
-    show_subparsers = show_parser.add_subparsers(dest='show_command')
-    
-    # Show subcommands
-    show_subparsers.add_parser('switches', help='Show configured switches')
-    show_subparsers.add_parser('aps', help='Show discovered APs')
-    show_subparsers.add_parser('ztp', help='Show ZTP status')
-    
-    @with_category(CMD_CATEGORY_SHOW)
-    @with_argparser(show_parser)
-    def do_show(self, args):
-        """Show ZTP configuration and status"""
-        if not args.show_command:
-            self.do_help('show')
-            return
-            
-        if args.show_command == 'switches':
-            self._show_switches()
-        elif args.show_command == 'aps':
-            self._show_aps()
-        elif args.show_command == 'ztp':
-            self._show_ztp_status()
-    
-    def _show_switches(self):
-        """Show configured switches"""
-        if not self.switches:
-            self.poutput("No switches configured")
-            return
-            
-        # Create a formatted table
-        self.poutput("\nConfigured Switches:")
-        self.poutput("--------------------------------------------------")
-        self.poutput(f"{'IP Address':<15} {'Status':<12} {'Configured':<10}")
-        self.poutput("--------------------------------------------------")
-        
-        for ip, switch in self.switches.items():
-            self.poutput(
-                f"{ip:<15} {switch['status']:<12} {'Yes' if switch['configured'] else 'No':<10}"
-            )
-        self.poutput("--------------------------------------------------\n")
-    
-    def _show_aps(self):
-        """Show discovered APs"""
-        if not self.aps:
-            self.poutput("No APs discovered")
-            return
-            
-        # Create a formatted table
-        self.poutput("\nDiscovered Access Points:")
-        self.poutput("--------------------------------------------------")
-        self.poutput(f"{'MAC Address':<17} {'IP Address':<15} {'Status':<12}")
-        self.poutput("--------------------------------------------------")
-        
-        for mac, ap in self.aps.items():
-            self.poutput(
-                f"{mac:<17} {ap.get('ip', 'Unknown'):<15} {ap.get('status', 'Unknown'):<12}"
-            )
-        self.poutput("--------------------------------------------------\n")
-    
-    def _show_ztp_status(self):
-        """Show ZTP status"""
-        self.poutput("\nZTP Status:")
-        self.poutput("--------------------------------------------------")
-        self.poutput(f"ZTP Enabled: {'Yes' if self.ztp_enabled else 'No'}")
-        self.poutput(f"Configured Switches: {len(self.switches)}")
-        self.poutput(f"Discovered APs: {len(self.aps)}")
-        # Add more status information as needed
-        self.poutput("--------------------------------------------------\n")
-
-    #
-    # Chat Interface Commands
-    #
-    @with_category(CMD_CATEGORY_CHAT)
-    def do_chat(self, _):
-        """Enter chat interface with AI agent"""
-        self.poutput("\nEntering chat interface. Type 'exit' to return to CLI.")
-        
-        # Simple chat loop
-        while True:
-            user_input = input("You: ")
-            if user_input.lower() in ('exit', 'quit'):
-                break
-                
-            # Here you would pass the input to your agent
-            # For now, just echo back
-            print(f"Agent: I received: {user_input}")
-        
-        self.poutput("Exiting chat interface\n")
-
-    #
-    # Override special methods
-    #
-    def emptyline(self):
-        """Do nothing on empty line"""
-        pass
-    
-    def default(self, line):
-        """Handle unknown command"""
-        self.poutput(f"Unknown command: {line}")
-        self.poutput("Type 'help' or '?' for available commands")
-    
-    def help_help(self):
-        """Help for help command"""
-        self.poutput("Show help for available commands")
-        self.poutput("Usage: help [command]")
-        self.poutput("       ? [command]")
+        # Display the message with color
+        self.poutput(f"{colors.get(color, colors['yellow'])}{message}{colors['reset']}")
 
 
 def main():

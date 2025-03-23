@@ -1,0 +1,9 @@
+id,name,type,description
+1,Default,other,Default VLAN
+10,Management,management,Management network
+20,Wireless-Staff,wireless,Staff wireless network
+30,Wireless-Guest,wireless,Guest wireless network
+40,Voice,other,Voice over IP
+50,Data,other,User data
+60,IoT,other,Internet of Things devices
+99,Native,other,Native VLAN for trunks

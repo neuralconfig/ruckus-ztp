@@ -26,11 +26,10 @@ def load_config(config_path: str) -> Dict[str, Any]:
             'poll_interval': 60,
         },
         'network': {
-            'vlans': {
-                'default': 1,
-                'management': 10,
-                'wireless': [20, 30, 40]
-            },
+            'base_config_file': 'config/base_configuration.txt',
+            'base_config': '',  # Will be populated from the file
+            'management_vlan': 10,
+            'wireless_vlans': [20, 30, 40],
             'ip_pool': '192.168.10.0/24',
             'gateway': '192.168.10.1',
         },
@@ -57,15 +56,18 @@ def load_config(config_path: str) -> Dict[str, Any]:
                 for key, value in parser[section].items():
                     # Handle special cases
                     if section == 'network' and key == 'wireless_vlans':
-                        config[section]['vlans']['wireless'] = [int(v.strip()) for v in value.split(',')]
-                    elif section == 'network' and key in ['default_vlan', 'management_vlan']:
-                        config[section]['vlans'][key.split('_')[0]] = int(value)
+                        config[section]['wireless_vlans'] = [int(v.strip()) for v in value.split(',')]
+                    elif section == 'network' and key == 'management_vlan':
+                        config[section]['management_vlan'] = int(value)
                     else:
                         # Try to convert to int if possible
                         try:
                             config[section][key] = int(value)
                         except ValueError:
                             config[section][key] = value
+            
+            # Load base configuration from file
+            _load_base_config(config['network'])
             
             # Validate IP pool and gateway
             _validate_ip_config(config['network'])
@@ -80,6 +82,37 @@ def load_config(config_path: str) -> Dict[str, Any]:
         logger.warning(f"Configuration file {config_path} not found, using default configuration")
     
     return config
+
+def _load_base_config(network_config: Dict[str, Any]) -> None:
+    """
+    Load base configuration from file.
+    
+    Args:
+        network_config: Network configuration dictionary.
+    """
+    base_config_file = network_config.get('base_config_file', 'config/base_configuration.txt')
+    
+    # Expand path
+    base_config_file = os.path.expanduser(base_config_file)
+    
+    # Print absolute path for debugging
+    abs_path = os.path.abspath(base_config_file)
+    logger.info(f"Looking for base configuration file at: {abs_path}")
+    
+    # If file exists, load it
+    if os.path.exists(abs_path):
+        try:
+            with open(abs_path, 'r') as f:
+                content = f.read()
+                network_config['base_config'] = content
+                logger.info(f"Loaded base configuration ({len(content)} bytes) from {abs_path}")
+        except Exception as e:
+            logger.error(f"Error loading base configuration from {abs_path}: {e}", exc_info=True)
+            logger.warning("Using empty base configuration")
+            network_config['base_config'] = ''
+    else:
+        logger.warning(f"Base configuration file {abs_path} not found, using empty base configuration")
+        network_config['base_config'] = ''
 
 def _validate_ip_config(network_config: Dict[str, Any]) -> None:
     """

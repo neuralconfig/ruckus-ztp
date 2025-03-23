@@ -9,7 +9,11 @@ import configparser
 from typing import Dict, List, Optional, Any
 
 # Import our modules
-from ztp_agent.cli.base import ZTPAgentCLI
+from ztp_agent.cli.base import (
+    ZTPAgentCLI, DEFAULT_USERNAME, DEFAULT_PASSWORD, VLAN,
+    VLAN_TYPE_MANAGEMENT, VLAN_TYPE_WIRELESS, VLAN_TYPE_OTHER
+)
+from ztp_agent.cli.commands.vlan_commands import VLAN_TYPE_DATA
 from ztp_agent.ztp.process import ZTPProcess
 from ztp_agent.agent.chat_interface import ChatInterface
 
@@ -32,9 +36,13 @@ def setup_logging(log_level: str = "INFO"):
     # Return logger for main module
     return logging.getLogger('ztp_agent')
 
-def load_config(config_path: str) -> Dict[str, Any]:
+# Import config loading function instead of defining it here
+from ztp_agent.ztp.config import load_config
+
+# Keep this as a backup reference but it's not used anymore
+def _load_config_old(config_path: str) -> Dict[str, Any]:
     """
-    Load configuration from file.
+    DEPRECATED: Use ztp_agent.ztp.config.load_config instead.
     
     Args:
         config_path: Path to configuration file.
@@ -47,11 +55,12 @@ def load_config(config_path: str) -> Dict[str, Any]:
             'poll_interval': 60,
         },
         'network': {
-            'vlans': {
-                'default': 1,
-                'management': 10,
-                'wireless': [20, 30, 40]
-            },
+            # Initialize with empty dicts to be filled from config
+            'default_vlan': 1,
+            'management_vlan': 10,
+            'wireless_vlans': [20, 30, 40],
+            'other_vlans': [50, 60],
+            'vlans': {},  # Will store individual VLAN definitions
             'ip_pool': '192.168.10.0/24',
             'gateway': '192.168.10.1',
         },
@@ -76,11 +85,27 @@ def load_config(config_path: str) -> Dict[str, Any]:
                     config[section] = {}
                 
                 for key, value in parser[section].items():
-                    # Handle special cases
+                    # Handle special cases for VLANs
                     if section == 'network' and key == 'wireless_vlans':
-                        config[section]['vlans']['wireless'] = [int(v.strip()) for v in value.split(',')]
+                        config[section]['wireless_vlans'] = [int(v.strip()) for v in value.split(',')]
+                    elif section == 'network' and key == 'other_vlans':
+                        config[section]['other_vlans'] = [int(v.strip()) for v in value.split(',')]
                     elif section == 'network' and key in ['default_vlan', 'management_vlan']:
-                        config[section]['vlans'][key.split('_')[0]] = int(value)
+                        config[section][key] = int(value)
+                    # Handle individual VLAN definitions (format: vlan_ID_property)
+                    elif section == 'network' and key.startswith('vlan_') and '_' in key[5:]:
+                        try:
+                            parts = key.split('_')
+                            if len(parts) >= 3:
+                                vlan_id = int(parts[1])
+                                property_name = '_'.join(parts[2:])
+                                
+                                if vlan_id not in config[section]['vlans']:
+                                    config[section]['vlans'][vlan_id] = {}
+                                
+                                config[section]['vlans'][vlan_id][property_name] = value
+                        except (ValueError, IndexError) as e:
+                            logging.warning(f"Invalid VLAN config key: {key} - {e}")
                     else:
                         # Try to convert to int if possible
                         try:
@@ -104,11 +129,17 @@ def parse_args():
                         help='Set the logging level')
     parser.add_argument('--config', default='~/.ztp_agent.cfg',
                         help='Path to configuration file')
+    parser.add_argument('--password', 
+                        help='Set preferred password for super user')
+    parser.add_argument('--seed-ip', 
+                        help='IP address of seed switch to automatically add')
+    parser.add_argument('--debug', action='store_true',
+                        help='Enable debug mode to display all switch commands and responses')
     
     return parser.parse_args()
 
 class EnhancedZTPAgentCLI(ZTPAgentCLI):
-    """Enhanced CLI with ZTP and chat functionality"""
+    """Enhanced CLI with ZTP and chat functionality with persistent configuration"""
     
     def __init__(self, config: Dict[str, Any]):
         """
@@ -122,8 +153,27 @@ class EnhancedZTPAgentCLI(ZTPAgentCLI):
         # Save configuration
         self.config = config
         
-        # Initialize ZTP process
-        self.ztp_process = ZTPProcess(config['network'])
+        # Set preferred password if configured
+        if config.get('switches', {}).get('preferred_password'):
+            self.default_credentials['preferred_password'] = config['switches']['preferred_password']
+            print(f"Using configured preferred password for '{DEFAULT_USERNAME}' user")
+            
+        # Set debug mode if configured
+        if config.get('debug', {}).get('enabled', False):
+            self.debug_mode = True
+            print("Debug mode enabled - switch commands and responses will be displayed in yellow")
+        
+        # Load VLANs from config if present
+        self._load_vlans_from_config(config)
+        
+        # Initialize ZTP process with debug callback if debug mode is enabled
+        # Use the full config, not just the network section
+        ztp_config = config.copy()  
+        if self.debug_mode:
+            ztp_config['debug'] = True
+            ztp_config['debug_callback'] = self.debug_callback
+            
+        self.ztp_process = ZTPProcess(ztp_config)
         
         # Initialize chat interface (only if API key is provided)
         if config['agent'].get('openrouter_api_key'):
@@ -140,27 +190,54 @@ class EnhancedZTPAgentCLI(ZTPAgentCLI):
         """Add a switch to the inventory"""
         # Check for default credentials
         actual_password = password
+        target_password = password
         
-        # If using super user with first time login, use default password
-        if username.lower() == 'super' and password != 'sp-admin':
-            self.poutput(f"Using default password 'sp-admin' for initial connection to {ip}")
-            self.poutput(f"The password will be changed to your specified password during first login")
-            # For the initial connection we use the default password, then change it
-            actual_password = 'sp-admin'
+        # If using super user with first time login
+        if username.lower() == DEFAULT_USERNAME.lower():
+            # For first login, always use the default password
+            if password != DEFAULT_PASSWORD:
+                self.poutput(f"Using default password '{DEFAULT_PASSWORD}' for initial connection to {ip}")
+                actual_password = DEFAULT_PASSWORD
+                
+                # If we have a preferred password configured, use that instead of the provided password
+                if self.default_credentials['preferred_password']:
+                    target_password = self.default_credentials['preferred_password']
+                    self.poutput(f"Will change to your configured preferred password during first login")
+                else:
+                    self.poutput(f"Will change to your specified password '{password}' during first login")
         
-        success = self.ztp_process.add_switch(ip, username, actual_password)
+        # Pass debug flag and callback if debug mode is enabled
+        debug_params = {}
+        if self.debug_mode:
+            debug_params = {
+                'debug': True,
+                'debug_callback': self.debug_callback
+            }
+        
+        success = self.ztp_process.add_switch(ip, username, actual_password, preferred_password=target_password, **debug_params)
         
         if success:
+            # Get switch information from ZTP process, including hostname if available
+            switch_info = self.ztp_process.get_switch_info(ip)
+            
             # Update CLI switches dictionary
             self.switches[ip] = {
                 'ip': ip,
                 'username': username,
-                'password': password,  # Store the user-specified password
+                'password': target_password,  # Store the target password (for future connections)
+                'initial_password': actual_password,  # Store the initial password (for first connection)
                 'status': 'Added',
-                'configured': False
+                'configured': False,
+                'hostname': switch_info.get('hostname', f"switch-{ip.replace('.', '-')}"),
+                'model': switch_info.get('model'),
+                'serial': switch_info.get('serial')
             }
             
+            # Print switch information including model and serial if available
             self.poutput(f"Switch {ip} added to inventory")
+            if switch_info.get('model') and switch_info.get('serial'):
+                self.poutput(f"Model: {switch_info.get('model')}, Serial: {switch_info.get('serial')}")
+                self.poutput(f"Hostname: {switch_info.get('hostname')}")
         else:
             self.perror(f"Failed to add switch {ip}")
     
@@ -188,9 +265,287 @@ class EnhancedZTPAgentCLI(ZTPAgentCLI):
             self.poutput("ZTP process disabled")
         else:
             self.perror("Failed to stop ZTP process")
+            
+    def _set_preferred_password(self, password: str):
+        """
+        Override to save the preferred password to the config file.
+        """
+        # Call the parent class method to set the password in memory
+        super()._set_preferred_password(password)
+        
+        # Now save it to the config file
+        if 'switches' not in self.config:
+            self.config['switches'] = {}
+        
+        self.config['switches']['preferred_password'] = password
+        
+        # Save the config file
+        self._save_config()
+        
+        self.poutput("Preferred password saved to configuration file")
+        
+    def _load_vlans_from_csv(self, file_path: str):
+        """
+        Override to save VLANs to the config file after loading from CSV.
+        """
+        # Call the parent class method to load VLANs
+        super()._load_vlans_from_csv(file_path)
+        
+        # Save to config
+        self._save_vlans_to_config()
+        
+        self.poutput("VLANs saved to configuration file")
+        
+    def _add_vlan(self, vlan_id: int, name: str, vlan_type: str, description: str = ""):
+        """
+        Override to save VLANs to the config file after adding.
+        """
+        # Call the parent class method to add the VLAN
+        super()._add_vlan(vlan_id, name, vlan_type, description)
+        
+        # Save to config
+        self._save_vlans_to_config()
+        
+        self.poutput("VLAN configuration saved to configuration file")
+        
+    def _set_management_vlan(self, vlan_id: int):
+        """
+        Override to save the management VLAN ID to the config file.
+        """
+        # Call the parent class method to set the management VLAN
+        super()._set_management_vlan(vlan_id)
+        
+        # Save to config
+        self._save_vlans_to_config()
+        
+        self.poutput("Management VLAN saved to configuration file")
+        
+    def _load_vlans_from_config(self, config: Dict[str, Any]):
+        """
+        Load VLANs from the configuration.
+        
+        Args:
+            config: Configuration dictionary.
+        """
+        try:
+            # Reset VLANs to empty dictionary
+            self.vlans = {}
+            
+            # Get network configuration
+            network_config = config.get('network', {})
+            
+            # Get management VLAN ID
+            if 'management_vlan' in network_config:
+                self.default_management_vlan_id = int(network_config['management_vlan'])
+            
+            # Create default VLANs first
+            default_vlan_id = network_config.get('default_vlan', 1)
+            self.vlans[default_vlan_id] = VLAN(
+                id=default_vlan_id,
+                name="Default", 
+                type=VLAN_TYPE_OTHER,
+                description="Default VLAN"
+            )
+            
+            # Management VLAN
+            management_vlan_id = self.default_management_vlan_id
+            self.vlans[management_vlan_id] = VLAN(
+                id=management_vlan_id,
+                name="Management", 
+                type=VLAN_TYPE_MANAGEMENT,
+                description="Management network (default)"
+            )
+            
+            # Wireless VLANs
+            if 'wireless_vlans' in network_config and network_config['wireless_vlans']:
+                for vlan_id in network_config['wireless_vlans']:
+                    if vlan_id not in self.vlans:
+                        self.vlans[vlan_id] = VLAN(
+                            id=vlan_id,
+                            name=f"Wireless-{vlan_id}",
+                            type=VLAN_TYPE_WIRELESS,
+                            description=f"Wireless VLAN {vlan_id}"
+                        )
+            
+            # Other VLANs
+            if 'other_vlans' in network_config and network_config['other_vlans']:
+                for vlan_id in network_config['other_vlans']:
+                    if vlan_id not in self.vlans:
+                        self.vlans[vlan_id] = VLAN(
+                            id=vlan_id,
+                            name=f"VLAN-{vlan_id}",
+                            type=VLAN_TYPE_OTHER,
+                            description=f"VLAN {vlan_id}"
+                        )
+            
+            # Now check for specific VLAN overrides from vlans dictionary
+            vlan_dict = network_config.get('vlans', {})
+            if vlan_dict and isinstance(vlan_dict, dict):
+                for vlan_id_str, vlan_data in vlan_dict.items():
+                    try:
+                        vlan_id = int(vlan_id_str)
+                        
+                        if vlan_id in self.vlans:
+                            # Update existing VLAN if present
+                            if 'name' in vlan_data:
+                                self.vlans[vlan_id].name = vlan_data['name']
+                            if 'type' in vlan_data:
+                                self.vlans[vlan_id].type = vlan_data['type']
+                            if 'description' in vlan_data:
+                                self.vlans[vlan_id].description = vlan_data['description']
+                        else:
+                            # Create new VLAN
+                            vlan = VLAN(
+                                id=vlan_id,
+                                name=vlan_data.get('name', f"VLAN-{vlan_id}"),
+                                type=vlan_data.get('type', VLAN_TYPE_OTHER),
+                                description=vlan_data.get('description', '')
+                            )
+                            self.vlans[vlan_id] = vlan
+                    except (ValueError, TypeError) as e:
+                        logging.warning(f"Invalid VLAN ID or data: {vlan_id_str} - {str(e)}")
+            
+            print(f"Loaded {len(self.vlans)} VLANs from configuration")
+        
+        except Exception as e:
+            logging.error(f"Error loading VLANs from config: {str(e)}")
+            # Set up basic VLANs
+            self.vlans = {
+                1: VLAN(id=1, name="Default", type=VLAN_TYPE_OTHER, description="Default VLAN"),
+                10: VLAN(id=10, name="Management", type=VLAN_TYPE_MANAGEMENT, description="Management network")
+            }
+            self.default_management_vlan_id = 10
+            print("Error loading VLANs from config. Using default VLANs.")
+    
+    def _save_vlans_to_config(self):
+        """Save VLANs to the configuration file"""
+        if 'network' not in self.config:
+            self.config['network'] = {}
+            
+        # Save management VLAN ID
+        self.config['network']['management_vlan'] = self.default_management_vlan_id
+        
+        # Save default VLAN ID
+        default_vlans = [v.id for v in self.vlans.values() if v.type == VLAN_TYPE_OTHER and v.id == 1]
+        if default_vlans:
+            self.config['network']['default_vlan'] = default_vlans[0]
+        
+        # Save wireless VLANs
+        wireless_vlans = [v.id for v in self.vlans.values() if v.type == VLAN_TYPE_WIRELESS]
+        if wireless_vlans:
+            self.config['network']['wireless_vlans'] = wireless_vlans
+        
+        # Save other VLANs (except default VLAN 1)
+        other_vlans = [v.id for v in self.vlans.values() if v.type == VLAN_TYPE_OTHER and v.id != 1]
+        if other_vlans:
+            self.config['network']['other_vlans'] = other_vlans
+            
+        # Save individual VLAN details for customized VLANs
+        vlan_dict = {}
+        for vlan in self.vlans.values():
+            # Only save customized VLANs with non-default names/descriptions
+            if (vlan.type == VLAN_TYPE_MANAGEMENT and vlan.name != "Management") or \
+               (vlan.type == VLAN_TYPE_OTHER and vlan.id == 1 and vlan.name != "Default") or \
+               (vlan.type == VLAN_TYPE_WIRELESS and vlan.name != f"Wireless-{vlan.id}") or \
+               (vlan.type == VLAN_TYPE_OTHER and vlan.id != 1 and vlan.name != f"VLAN-{vlan.id}"):
+                vlan_dict[str(vlan.id)] = {
+                    'name': vlan.name,
+                    'type': vlan.type,
+                    'description': vlan.description
+                }
+                
+        if vlan_dict:
+            self.config['network']['vlans'] = vlan_dict
+        
+        # Save the config file
+        self._save_config()
+    
+    def _save_config(self):
+        """Save the configuration to a file."""
+        try:
+            # Create a ConfigParser object
+            config_parser = configparser.ConfigParser()
+            
+            # Add sections from our config dictionary
+            for section, options in self.config.items():
+                if section not in config_parser:
+                    config_parser[section] = {}
+                
+                # Add options for this section
+                for key, value in options.items():
+                    # Special handling for VLANs
+                    if section == 'network' and key == 'vlans':
+                        # Save VLANs specially formatted
+                        if isinstance(value, dict):
+                            for vlan_id, vlan_data in value.items():
+                                if isinstance(vlan_data, dict):
+                                    config_parser[section][f"vlan_{vlan_id}_name"] = vlan_data.get('name', '')
+                                    config_parser[section][f"vlan_{vlan_id}_type"] = vlan_data.get('type', '')
+                                    config_parser[section][f"vlan_{vlan_id}_description"] = vlan_data.get('description', '')
+                    # Handle different types of values
+                    elif isinstance(value, dict):
+                        # For nested dictionaries, flatten with key prefix
+                        for subkey, subvalue in value.items():
+                            config_parser[section][f"{key}_{subkey}"] = str(subvalue)
+                    elif isinstance(value, list):
+                        # For lists, join with commas
+                        config_parser[section][key] = ", ".join(str(item) for item in value)
+                    else:
+                        # Regular values
+                        config_parser[section][key] = str(value)
+            
+            # Write to file
+            config_path = os.path.expanduser('~/.ztp_agent.cfg')
+            with open(config_path, 'w') as configfile:
+                config_parser.write(configfile)
+                
+            return True
+            
+        except Exception as e:
+            self.perror(f"Error saving configuration: {e}")
+            return False
+    
+    def _sync_inventory(self):
+        """Sync inventory data between ZTP process and CLI"""
+        # Sync switches
+        for ip, switch in self.ztp_process.inventory['switches'].items():
+            # Skip switches already in CLI inventory
+            if ip in self.switches:
+                continue
+                
+            # Add newly discovered switch to CLI inventory
+            self.switches[ip] = {
+                'ip': ip,
+                'username': switch.get('username'),
+                'password': switch.get('password'),
+                'preferred_password': switch.get('preferred_password'),
+                'status': switch.get('status', 'Discovered'),
+                'configured': switch.get('configured', False),
+                'hostname': switch.get('hostname', f"switch-{ip.replace('.', '-')}"),
+                'model': switch.get('model'),
+                'serial': switch.get('serial')
+            }
+            
+        # Sync APs 
+        for ip, ap in self.ztp_process.inventory['aps'].items():
+            # Skip APs already in CLI inventory
+            if ip in self.aps:
+                continue
+                
+            self.aps[ip] = {
+                'ip': ip,
+                'mac': ap.get('mac'),
+                'system_name': ap.get('hostname'),
+                'status': ap.get('status', 'Discovered'),
+                'connected_to': ap.get('connected_to', {})
+            }
     
     def _show_ztp_status(self):
         """Show ZTP status"""
+        # First sync inventory
+        self._sync_inventory()
+        
+        # Get status
         status = self.ztp_process.get_status()
         
         self.poutput("\nZTP Status:")
@@ -228,9 +583,30 @@ def main():
     config = load_config(args.config)
     logger.debug(f"Loaded configuration: {config}")
     
+    # Handle command-line supplied password
+    if args.password:
+        if 'switches' not in config:
+            config['switches'] = {}
+        config['switches']['preferred_password'] = args.password
+        logger.info(f"Using preferred password from command line")
+    
+    # Set debug mode in config
+    if 'debug' not in config:
+        config['debug'] = {}
+    config['debug']['enabled'] = args.debug
+    if args.debug:
+        logger.info("Debug mode enabled - will display all switch commands and responses")
+    
     try:
-        # Initialize and run enhanced CLI
+        # Initialize enhanced CLI
         cli = EnhancedZTPAgentCLI(config)
+        
+        # Handle seed switch if provided
+        if args.seed_ip:
+            logger.info(f"Adding seed switch: {args.seed_ip}")
+            # Use default super user and the configured preferred password
+            cli._add_switch(args.seed_ip, DEFAULT_USERNAME, 
+                          cli.default_credentials.get('preferred_password', DEFAULT_PASSWORD))
         
         # Start the CLI loop
         return cli.cmdloop()
