@@ -5,7 +5,13 @@ import logging
 import re
 from typing import List, Optional
 
-from ztp_agent.network.switch.base import SwitchConnection
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ztp_agent.network.switch.base.connection import BaseConnection as SwitchConnection
+else:
+    # At runtime, this will be the actual connection object passed in
+    SwitchConnection = object
 from ztp_agent.network.switch.enums import PortStatus, PoEStatus
 
 # Set up logging
@@ -505,3 +511,61 @@ class SwitchConfiguration:
             self.connection.run_command("exit")  # Try to exit interface config
             self.connection.run_command("exit")  # Try to exit global config
             return False
+
+
+# Module-level functions for monkey patching to SwitchOperation class
+
+def apply_base_config(connection, base_config: str) -> bool:
+    """Apply base configuration to the switch."""
+    config_obj = SwitchConfiguration(connection)
+    return config_obj.apply_base_config(base_config)
+
+def configure_switch_basic(connection, hostname: str, mgmt_vlan: int, mgmt_ip: str, mgmt_mask: str) -> bool:
+    """Perform basic switch configuration after VLANs have been created."""
+    config_obj = SwitchConfiguration(connection)
+    return config_obj.configure_switch_basic(hostname, mgmt_vlan, mgmt_ip, mgmt_mask)
+
+def configure_switch_port(connection, port: str) -> bool:
+    """Configure a port connected to another switch as a trunk port."""
+    config_obj = SwitchConfiguration(connection)
+    return config_obj.configure_switch_port(port)
+
+def configure_ap_port(connection, port: str, wireless_vlans: List[int], management_vlan: int = 10) -> bool:
+    """Configure a port connected to an Access Point."""
+    config_obj = SwitchConfiguration(connection)
+    return config_obj.configure_ap_port(port, wireless_vlans, management_vlan)
+
+def set_hostname(connection) -> bool:
+    """Set the switch hostname based on model and serial number."""
+    config_obj = SwitchConfiguration(connection)
+    return config_obj.set_hostname()
+
+def get_port_status(connection, port: str) -> Optional[PortStatus]:
+    """Get port status."""
+    config_obj = SwitchConfiguration(connection)
+    return config_obj.get_port_status(port)
+
+def get_port_vlan(connection, port: str) -> Optional[int]:
+    """Get port VLAN."""
+    config_obj = SwitchConfiguration(connection)
+    return config_obj.get_port_vlan(port)
+
+def get_poe_status(connection, port: str) -> Optional[PoEStatus]:
+    """Get PoE status."""
+    config_obj = SwitchConfiguration(connection)
+    return config_obj.get_poe_status(port)
+
+def change_port_vlan(connection, port: str, vlan_id: int) -> bool:
+    """Change port VLAN."""
+    config_obj = SwitchConfiguration(connection)
+    return config_obj.change_port_vlan(port, vlan_id)
+
+def set_port_status(connection, port: str, status: PortStatus) -> bool:
+    """Set port status."""
+    config_obj = SwitchConfiguration(connection)
+    return config_obj.set_port_status(port, status)
+
+def set_poe_status(connection, port: str, status: PoEStatus) -> bool:
+    """Set PoE status."""
+    config_obj = SwitchConfiguration(connection)
+    return config_obj.set_poe_status(port, status)

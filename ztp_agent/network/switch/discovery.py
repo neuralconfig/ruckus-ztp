@@ -6,7 +6,13 @@ import re
 import time
 from typing import Dict, Tuple
 
-from ztp_agent.network.switch.base import SwitchConnection
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ztp_agent.network.switch.base.connection import BaseConnection as SwitchConnection
+else:
+    # At runtime, this will be the actual connection object passed in
+    SwitchConnection = object
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -198,3 +204,16 @@ class SwitchDiscovery:
                         self.connection.debug_callback(f"Found switch in trace-l2: MAC={mac}, IP={ip}", color="green")
                         
         return True, ip_mac_map
+
+
+# Module-level functions for monkey patching to SwitchOperation class
+
+def get_lldp_neighbors(connection):
+    """Get LLDP neighbor information."""
+    discovery_obj = SwitchDiscovery(connection)
+    return discovery_obj.get_lldp_neighbors()
+
+def get_l2_trace_data(connection):
+    """Get L2 trace data for switch discovery."""
+    discovery_obj = SwitchDiscovery(connection)
+    return discovery_obj.get_l2_trace_data()
