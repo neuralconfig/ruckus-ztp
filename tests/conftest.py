@@ -12,7 +12,7 @@ def mock_ssh_client():
     mock_shell = Mock(spec=paramiko.Channel)
     
     # Configure shell mock
-    mock_shell.recv_ready.return_value = True
+    mock_shell.recv_ready.side_effect = [True, False]  # First call True, then False to exit loops
     mock_shell.recv.return_value = b"ICX7250-48P>test output\n"
     mock_shell.settimeout = Mock()
     mock_shell.send = Mock()
