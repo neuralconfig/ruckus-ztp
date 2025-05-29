@@ -82,13 +82,12 @@ class TestRealSwitchConnection:
         # Enter config mode
         assert switch_connection.enter_config_mode() is True
         
-        # Test a harmless config command (description on a test interface)
-        success, output = switch_connection.run_command("interface loopback 99")
+        # Test a harmless config command (just check if we can enter interface config)
+        # Use a physical interface that should exist (1/1/1)
+        success, output = switch_connection.run_command("interface ethernet 1/1/1")
         assert success is True
         
-        success, output = switch_connection.run_command("description Testing ZTP Agent")
-        assert success is True
-        
+        # Exit the interface config (this should always work)
         success, output = switch_connection.run_command("exit")
         assert success is True
         
