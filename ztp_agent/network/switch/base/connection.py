@@ -123,8 +123,11 @@ class BaseConnection:
             if ("Enter new password:" in initial_output or 
                 "New password:" in initial_output or
                 "Enter the new password" in initial_output):
-                if not self._handle_first_time_login(initial_output):
+                updated_output = self._handle_first_time_login(initial_output)
+                if updated_output is False:
                     return False
+                else:
+                    initial_output = updated_output  # Use updated output for prompt check
             
             # Check if we're in exec mode (prompt ends with '>')
             is_exec_prompt = re.search(r'>\s*$', initial_output, re.MULTILINE)
@@ -196,13 +199,15 @@ class BaseConnection:
                 self.debug_callback(f"First-time login result: {final_output}", "cyan")
             
             # Check if we have a valid prompt after password change
-            if re.search(r'>\s*$', final_output, re.MULTILINE):
+            # Look for prompt anywhere in the output, not just at the end
+            if re.search(r'>\s*$', final_output, re.MULTILINE) or ">" in final_output:
                 # Update current password and combine outputs for final prompt check
                 self.password = self.preferred_password
-                initial_output += final_output  # Combine for final check
+                combined_output = initial_output + final_output  # Combine for final check
                 logger.info(f"Successfully changed password for switch {self.ip}")
+                return combined_output  # Return combined output for prompt checking
             else:
-                logger.error("No valid prompt after password change")
+                logger.error(f"No valid prompt after password change. Final output: {final_output}")
                 return False
             
         except Exception as e:

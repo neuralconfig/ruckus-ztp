@@ -107,7 +107,9 @@ class TestBaseConnection:
     def test_enter_config_mode_success(self, mock_sleep, sample_switch_config, mock_ssh_client):
         """Test entering configuration mode successfully."""
         mock_client, mock_shell = mock_ssh_client
-        mock_shell.recv_ready.side_effect = [True, False]
+        # Use cycle to provide infinite True, False pattern for multiple commands
+        from itertools import cycle
+        mock_shell.recv_ready.side_effect = cycle([True, False])
         mock_shell.recv.return_value = b"Entering configuration mode\nICX7250-48P(config)>\n"
         
         conn = BaseConnection(**sample_switch_config)
@@ -133,7 +135,9 @@ class TestBaseConnection:
                 return b"Configuration saved\nICX7250-48P>\n"
         
         mock_shell.recv.side_effect = mock_recv
-        mock_shell.recv_ready.side_effect = [True, False, True, False]  # Two command cycles
+        # Use cycle for infinite alternating pattern to handle multiple commands
+        from itertools import cycle
+        mock_shell.recv_ready.side_effect = cycle([True, False])
         
         conn = BaseConnection(**sample_switch_config)
         conn.ssh_client = mock_client
@@ -143,7 +147,7 @@ class TestBaseConnection:
         result = conn.exit_config_mode(save=True)
         
         assert result is True
-        assert mock_shell.send.call_count == 2  # exit + write memory
+        assert mock_shell.send.call_count == 3  # exit config + write memory + exit enable
     
     @patch('ztp_agent.network.switch.base.connection.time.sleep')
     def test_context_manager(self, mock_sleep, sample_switch_config, mock_ssh_client):
