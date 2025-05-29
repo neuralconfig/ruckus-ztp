@@ -7,13 +7,17 @@ A Zero-Touch Provisioning (ZTP) agent for RUCKUS ICX switches and APs.
 This tool provides a network engineer-friendly command-line interface for automating the discovery, configuration, and management of RUCKUS network devices. Starting with a single seed switch, the ZTP agent can discover and configure connected devices with minimal manual intervention.
 
 Key features:
-- Command-line interface with tab completion and help system
-- Automatic device discovery using LLDP and L2 trace
-- Automated switch and AP configuration with management IP assignment from IP pool
-- Customizable base configuration file for initial switch setup (VLANs, spanning tree, etc.)
-- Intelligent trunk port configuration with appropriate VLAN tagging
-- Support for RUCKUS ICX switch commands and syntax
-- Chat interface powered by AI for natural language configuration
+- **Web Interface**: Modern web application for managing ZTP processes with real-time monitoring
+- **Command-line Interface**: Tab completion and help system for CLI operations
+- **MAC-based Device Tracking**: Prevents duplicate entries when device IPs change via DHCP
+- **Real-time Status Monitoring**: Live SSH activity indicators and configuration progress tracking
+- **Network Topology Visualization**: Interactive topology diagram with device connections and port information
+- **Automatic Device Discovery**: Using LLDP and L2 trace to find connected devices
+- **Automated Configuration**: Switch and AP configuration with management IP assignment from IP pool
+- **Credential Management**: Automatic credential cycling with default and custom credentials
+- **Customizable Base Configuration**: Initial switch setup (VLANs, spanning tree, etc.)
+- **Intelligent Port Configuration**: Trunk port configuration with appropriate VLAN tagging
+- **AI-powered Chat Interface**: Natural language configuration assistance
 
 ## Installation
 
@@ -55,6 +59,39 @@ ztp-agent> config switch 192.168.1.1 super your-new-password
 The agent will use `sp-admin` as the initial password, perform the required password change, and set it to your specified password.
 
 ## Usage
+
+### Web Interface
+
+Launch the modern web interface for the ZTP agent:
+```bash
+cd web_app
+python3 run.py
+```
+
+The web interface will be available at `http://localhost:8000` and provides:
+
+- **Real-time Device Monitoring**: Live status updates with SSH activity indicators
+- **Interactive Configuration**: Easy credential management and seed switch setup
+- **Network Topology View**: Visual representation of device connections with port information
+- **Status Tracking**: Granular device states (discovered → configuring → configured)
+- **MAC-based Device Tracking**: Prevents duplicate entries from DHCP IP changes
+- **Live Logs**: Real-time ZTP process logging and error reporting
+
+#### Device Status Indicators
+
+- **Green (Configured)**: Device is fully configured and operational
+- **Blue (Configuring)**: Device is actively being configured with commands
+- **Orange (Discovered)**: Device has been discovered but not yet configured
+- **Yellow Highlight + "● SSH"**: Device is currently accessed via SSH (real-time indicator)
+
+#### Topology Visualization
+
+- **Rectangles**: Represent switches
+- **Circles**: Represent access points
+- **Port Labels**: Show switch port numbers on connections
+- **Color Coding**: Status-based colors for quick network health assessment
+
+### Command Line Interface
 
 Run the ZTP agent CLI:
 ```

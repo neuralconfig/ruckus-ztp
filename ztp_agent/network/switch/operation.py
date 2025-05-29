@@ -20,7 +20,8 @@ class SwitchOperation(BaseConnection, DeviceInfo):
     def __init__(self, ip: str, username: str, password: str, 
                  preferred_password: Optional[str] = None,
                  timeout: int = 30, debug: bool = False,
-                 debug_callback: Optional[Callable[[str, str], None]] = None):
+                 debug_callback: Optional[Callable[[str, str], None]] = None,
+                 inventory_update_callback: Optional[Callable[[str, dict], None]] = None):
         """
         Initialize switch operation.
         
@@ -32,8 +33,10 @@ class SwitchOperation(BaseConnection, DeviceInfo):
             timeout: Connection timeout in seconds.
             debug: Enable debug mode.
             debug_callback: Callback for debug messages.
+            inventory_update_callback: Callback to update inventory state.
         """
         super().__init__(ip, username, password, preferred_password, timeout, debug, debug_callback)
+        self.inventory_update_callback = inventory_update_callback
     
     # Configuration methods will be attached via monkey patching in __init__.py
     # This preserves the existing pattern while using clean inheritance

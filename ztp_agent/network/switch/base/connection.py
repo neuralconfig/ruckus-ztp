@@ -141,6 +141,11 @@ class BaseConnection:
             
             self.connected = True
             logger.info(f"Connected to switch {self.ip}")
+            
+            # Update inventory if callback is available
+            if hasattr(self, 'inventory_update_callback') and self.inventory_update_callback:
+                self.inventory_update_callback(self.ip, {'ssh_active': True})
+                
             return True
             
         except Exception as e:
@@ -284,6 +289,10 @@ class BaseConnection:
                 
             self.connected = False
             logger.debug(f"Disconnected from switch {self.ip}")
+            
+            # Update inventory if callback is available
+            if hasattr(self, 'inventory_update_callback') and self.inventory_update_callback:
+                self.inventory_update_callback(self.ip, {'ssh_active': False})
             
         except Exception as e:
             logger.error(f"Error disconnecting from switch {self.ip}: {e}")
