@@ -5,6 +5,8 @@ import logging
 import threading
 import time
 import re
+import socket
+import paramiko
 from typing import Dict, List, Any, Optional
 import ipaddress
 
@@ -111,6 +113,7 @@ class ZTPProcess:
                 'hostname': hostname,
                 'status': 'Connected',
                 'configured': False,
+                'base_config_applied': False,  # Track if base config has been applied
                 'neighbors': {},
                 'ports': {}
             }
@@ -123,6 +126,22 @@ class ZTPProcess:
         
         except ValueError:
             logger.error(f"Invalid IP address: {ip}")
+            return False
+        except paramiko.ssh_exception.AuthenticationException as e:
+            logger.error(f"Authentication failed for switch {ip}: {e}")
+            logger.error(f"Verify that the username '{username}' and password are correct.")
+            logger.error(f"For first-time login, try using default credentials.")
+            return False
+        except paramiko.ssh_exception.NoValidConnectionsError as e:
+            logger.error(f"Connection error to switch {ip}: {e}")
+            logger.error(f"Make sure SSH (port 22) is enabled and accessible on the switch.")
+            return False
+        except paramiko.ssh_exception.SSHException as e:
+            logger.error(f"SSH error for switch {ip}: {e}")
+            return False
+        except socket.timeout as e:
+            logger.error(f"Connection timeout to switch {ip}: {e}")
+            logger.error(f"Check if the switch is reachable and responsive.")
             return False
         except Exception as e:
             logger.error(f"Error adding switch {ip}: {e}", exc_info=True)
@@ -342,6 +361,7 @@ class ZTPProcess:
                                         'hostname': system_name or f"switch-{ip_addr.replace('.', '-')}",
                                         'status': 'Discovered',
                                         'configured': False,
+                                        'base_config_applied': False,  # Track if base config has been applied
                                         'neighbors': {},
                                         'ports': {}
                                     }
@@ -468,14 +488,21 @@ class ZTPProcess:
                     mgmt_ip = ip
                     mgmt_mask = "255.255.255.0"  # Default mask
                 
-                # STEP 1: Apply base configuration (which includes VLAN creation with spanning tree)
-                logger.info(f"Sending base config to switch (length: {len(self.base_config)})")
-                success = switch_op.apply_base_config(self.base_config)
-                
-                if not success:
-                    logger.error(f"Failed to configure VLANs on switch {ip}")
-                    switch_op.disconnect()
-                    continue
+                # STEP 1: Apply base configuration (which includes VLAN creation with spanning tree) if not already applied
+                if not switch.get('base_config_applied', False):
+                    logger.info(f"Sending base config to switch (length: {len(self.base_config)})")
+                    success = switch_op.apply_base_config(self.base_config)
+                    
+                    if not success:
+                        logger.error(f"Failed to configure VLANs on switch {ip}")
+                        switch_op.disconnect()
+                        continue
+                    
+                    # Mark as base config applied
+                    switch['base_config_applied'] = True
+                    self.inventory['switches'][ip]['base_config_applied'] = True
+                else:
+                    logger.info(f"Base configuration already applied to switch {ip}, skipping")
                 
                 # STEP 2: Now perform basic configuration for management
                 success = switch_op.configure_switch_basic(
@@ -545,15 +572,23 @@ class ZTPProcess:
             
             # Connect to parent switch
             if switch_op.connect():
-                # STEP 1: First, apply the base configuration
-                success = switch_op.apply_base_config(self.base_config)
+                # Check if we need to apply base configuration (only if not already configured)
+                if not parent_switch.get('base_config_applied', False):
+                    logger.info(f"Applying base configuration to switch {switch_ip}")
+                    success = switch_op.apply_base_config(self.base_config)
+                    
+                    if not success:
+                        logger.error(f"Failed to configure VLANs on switch {switch_ip}")
+                        switch_op.disconnect()
+                        return
+                    
+                    # Mark as base config applied
+                    parent_switch['base_config_applied'] = True
+                    self.inventory['switches'][switch_ip]['base_config_applied'] = True
+                else:
+                    logger.info(f"Base configuration already applied to switch {switch_ip}, skipping")
                 
-                if not success:
-                    logger.error(f"Failed to configure VLANs on switch {switch_ip}")
-                    switch_op.disconnect()
-                    return
-                
-                # STEP 2: Configure the port as a switch trunk with all-tagged                
+                # Configure the port as a switch trunk with all-tagged                
                 success = switch_op.configure_switch_port(port)
                 if success:
                     logger.info(f"Configured port {port} on switch {switch_ip} as trunk for neighbor switch")
@@ -590,6 +625,7 @@ class ZTPProcess:
                         'hostname': hostname,
                         'status': 'Discovered',  # Start with Discovered status
                         'configured': False,     # Mark as not configured so it will be configured in next cycle
+                        'base_config_applied': False,  # Track if base config has been applied
                         'neighbors': {},
                         'discovered_from': {
                             'switch_ip': switch_ip,
@@ -657,13 +693,21 @@ class ZTPProcess:
                 mgmt_vlan = self.mgmt_vlan
                 wireless_vlans = self.wireless_vlans
                 
-                # STEP 1: First, apply the base configuration
-                success = switch_op.apply_base_config(self.base_config)
-                
-                if not success:
-                    logger.error(f"Failed to configure VLANs on switch {switch_ip}")
-                    switch_op.disconnect()
-                    return
+                # Check if we need to apply base configuration (only if not already configured)
+                if not parent_switch.get('base_config_applied', False):
+                    logger.info(f"Applying base configuration to switch {switch_ip}")
+                    success = switch_op.apply_base_config(self.base_config)
+                    
+                    if not success:
+                        logger.error(f"Failed to configure VLANs on switch {switch_ip}")
+                        switch_op.disconnect()
+                        return
+                    
+                    # Mark as base config applied
+                    parent_switch['base_config_applied'] = True
+                    self.inventory['switches'][switch_ip]['base_config_applied'] = True
+                else:
+                    logger.info(f"Base configuration already applied to switch {switch_ip}, skipping")
                 
                 # STEP 2: Configure the port for AP with specific tagged VLANs
                 success = switch_op.configure_ap_port(port, wireless_vlans, mgmt_vlan)

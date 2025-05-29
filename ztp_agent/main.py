@@ -36,90 +36,9 @@ def setup_logging(log_level: str = "INFO"):
     # Return logger for main module
     return logging.getLogger('ztp_agent')
 
-# Import config loading function instead of defining it here
+# Import config loading function
 from ztp_agent.ztp.config import load_config
 
-# Keep this as a backup reference but it's not used anymore
-def _load_config_old(config_path: str) -> Dict[str, Any]:
-    """
-    DEPRECATED: Use ztp_agent.ztp.config.load_config instead.
-    
-    Args:
-        config_path: Path to configuration file.
-        
-    Returns:
-        Configuration dictionary.
-    """
-    config = {
-        'ztp': {
-            'poll_interval': 60,
-        },
-        'network': {
-            # Initialize with empty dicts to be filled from config
-            'default_vlan': 1,
-            'management_vlan': 10,
-            'wireless_vlans': [20, 30, 40],
-            'other_vlans': [50, 60],
-            'vlans': {},  # Will store individual VLAN definitions
-            'ip_pool': '192.168.10.0/24',
-            'gateway': '192.168.10.1',
-        },
-        'agent': {
-            'openrouter_api_key': '',
-            'model': 'anthropic/claude-3-5-haiku',
-        }
-    }
-    
-    # Expand path
-    config_path = os.path.expanduser(config_path)
-    
-    # If config file exists, load it
-    if os.path.exists(config_path):
-        try:
-            parser = configparser.ConfigParser()
-            parser.read(config_path)
-            
-            # Parse each section
-            for section in parser.sections():
-                if section not in config:
-                    config[section] = {}
-                
-                for key, value in parser[section].items():
-                    # Handle special cases for VLANs
-                    if section == 'network' and key == 'wireless_vlans':
-                        config[section]['wireless_vlans'] = [int(v.strip()) for v in value.split(',')]
-                    elif section == 'network' and key == 'other_vlans':
-                        config[section]['other_vlans'] = [int(v.strip()) for v in value.split(',')]
-                    elif section == 'network' and key in ['default_vlan', 'management_vlan']:
-                        config[section][key] = int(value)
-                    # Handle individual VLAN definitions (format: vlan_ID_property)
-                    elif section == 'network' and key.startswith('vlan_') and '_' in key[5:]:
-                        try:
-                            parts = key.split('_')
-                            if len(parts) >= 3:
-                                vlan_id = int(parts[1])
-                                property_name = '_'.join(parts[2:])
-                                
-                                if vlan_id not in config[section]['vlans']:
-                                    config[section]['vlans'][vlan_id] = {}
-                                
-                                config[section]['vlans'][vlan_id][property_name] = value
-                        except (ValueError, IndexError) as e:
-                            logging.warning(f"Invalid VLAN config key: {key} - {e}")
-                    else:
-                        # Try to convert to int if possible
-                        try:
-                            config[section][key] = int(value)
-                        except ValueError:
-                            config[section][key] = value
-            
-            return config
-        
-        except Exception as e:
-            print(f"Error loading config from {config_path}: {e}")
-            print("Using default configuration")
-    
-    return config
 
 def parse_args():
     """Parse command line arguments"""
