@@ -647,12 +647,12 @@ class DirectZTPProcess:
             return False
     
     def _configure_hostname_and_management(self, switch_op, switch_data):
-        """Configure hostname and management IP"""
-        logger.info(f"Configuring hostname and management for switch {switch_op.ip}...")
+        """Configure switch hostname only (management IP disabled for now)"""
+        logger.info(f"Configuring hostname for switch {switch_op.ip}...")
         
         try:
             # Enter configuration mode first
-            switch_op._debug_message("Entering configuration mode for hostname and management setup", color="blue")
+            switch_op._debug_message("Entering configuration mode for hostname setup", color="blue")
             switch_op.channel.send("configure terminal\n")
             time.sleep(2)
             
@@ -678,47 +678,8 @@ class DirectZTPProcess:
                     hostname_response = switch_op.channel.recv(4096).decode('utf-8', errors='replace')
                     switch_op._debug_message(f"Hostname response: {hostname_response}", color="green")
             
-            # Configure management IP in the management VLAN
-            mgmt_vlan = self.config.get('network', {}).get('management_vlan', 10)
-            
-            # Assign an IP from the pool
-            ip_pool = self.config.get('network', {}).get('ip_pool', '192.168.10.0/24')
-            
-            # For simplicity, we'll just use the existing IP address
-            mgmt_ip = switch_op.ip
-            gateway = self.config.get('network', {}).get('gateway', '192.168.10.1')
-            
-            # Configure the management interface
-            logger.info(f"Configuring management interface with VLAN {mgmt_vlan}, IP {mgmt_ip}")
-            switch_op._debug_message(f"Configuring management interface with VLAN {mgmt_vlan}, IP {mgmt_ip}", color="yellow")
-            
-            # Enter interface config for virtual interface
-            switch_op.channel.send(f"interface ve {mgmt_vlan}\n")
-            time.sleep(1)
-            if switch_op.channel.recv_ready():
-                interface_response = switch_op.channel.recv(4096).decode('utf-8', errors='replace')
-                switch_op._debug_message(f"Interface mode response: {interface_response}", color="green")
-            
-            # Configure IP address
-            switch_op.channel.send(f"ip address {mgmt_ip} 255.255.255.0\n")
-            time.sleep(1)
-            if switch_op.channel.recv_ready():
-                ip_response = switch_op.channel.recv(4096).decode('utf-8', errors='replace')
-                switch_op._debug_message(f"IP address response: {ip_response}", color="green")
-            
-            # Exit interface config
-            switch_op.channel.send("exit\n")
-            time.sleep(1)
-            if switch_op.channel.recv_ready():
-                exit_interface_response = switch_op.channel.recv(4096).decode('utf-8', errors='replace')
-                switch_op._debug_message(f"Exit interface response: {exit_interface_response}", color="green")
-            
-            # Configure default gateway
-            switch_op.channel.send(f"ip route 0.0.0.0 0.0.0.0 {gateway}\n")
-            time.sleep(1)
-            if switch_op.channel.recv_ready():
-                gateway_response = switch_op.channel.recv(4096).decode('utf-8', errors='replace')
-                switch_op._debug_message(f"Gateway config response: {gateway_response}", color="green")
+            # Management IP configuration is disabled for now
+            switch_op._debug_message("Management IP configuration is disabled in this version", color="yellow")
             
             # Exit configuration mode
             switch_op._debug_message("Exiting configuration mode", color="blue")
@@ -728,12 +689,12 @@ class DirectZTPProcess:
                 exit_response = switch_op.channel.recv(4096).decode('utf-8', errors='replace')
                 switch_op._debug_message(f"Exit config mode response: {exit_response}", color="green")
             
-            logger.info(f"Hostname and management configured for switch {switch_op.ip}")
-            switch_op._debug_message(f"Hostname and management configured for switch {switch_op.ip}", color="green")
+            logger.info(f"Hostname configured for switch {switch_op.ip}")
+            switch_op._debug_message(f"Hostname configured for switch {switch_op.ip}", color="green")
             return True
             
         except Exception as e:
-            error_msg = f"Error configuring hostname and management: {e}"
+            error_msg = f"Error configuring hostname: {e}"
             logger.error(error_msg, exc_info=True)
             switch_op._debug_message(error_msg, color="red")
             return False
@@ -765,6 +726,7 @@ class DirectZTPProcess:
             port_desc_pattern = r'Port description\s+: "([^"]+)"'
             system_desc_pattern = r'System description\s+: "([^"]+)"'
             mgmt_ip_pattern = r'Management address: ([0-9\.]+)'
+            chassis_id_pattern = r'Chassis ID \([^)]+\): ([0-9a-fA-F\.]+)'
             
             # Find all port entries
             port_matches = list(re.finditer(port_pattern, lldp_output))
@@ -776,6 +738,9 @@ class DirectZTPProcess:
             
             # Keep track of discovered switches to add to inventory
             discovered_switches = []
+            
+            # Track switches with 0.0.0.0 IP addresses
+            unknown_ip_switches = []
             
             # If no ports found, let the user know
             if not port_matches:
@@ -811,11 +776,16 @@ class DirectZTPProcess:
                 mgmt_ip_match = re.search(mgmt_ip_pattern, port_section)
                 mgmt_ip = mgmt_ip_match.group(1) if mgmt_ip_match else ""
                 
+                # Try to find chassis ID (MAC address)
+                chassis_id_match = re.search(chassis_id_pattern, port_section)
+                chassis_id = chassis_id_match.group(1).lower() if chassis_id_match else ""
+                
                 switch_op._debug_message(f"Port {port} neighbor details:", color="yellow")
                 switch_op._debug_message(f"  - System name: {system_name}", color="yellow")
                 switch_op._debug_message(f"  - Port description: {port_desc}", color="yellow")
                 switch_op._debug_message(f"  - System description: {system_desc}", color="yellow")
                 switch_op._debug_message(f"  - Management IP: {mgmt_ip}", color="yellow")
+                switch_op._debug_message(f"  - Chassis ID (MAC): {chassis_id}", color="yellow")
                 
                 # Determine device type based on name or description
                 is_switch = "ICX" in system_name
@@ -831,12 +801,20 @@ class DirectZTPProcess:
                     switch_op._debug_message(f"Device is a switch - configuring port {port} as trunk", color="blue")
                     self._configure_switch_port(switch_op, port)
                     
-                    # If we have the management IP, add this switch to our list of discovered switches
-                    if mgmt_ip and mgmt_ip not in self.inventory['switches']:
+                    # Check if we have a valid management IP or need to find it later with trace-l2
+                    if mgmt_ip and mgmt_ip != "0.0.0.0" and mgmt_ip not in self.inventory['switches']:
                         switch_op._debug_message(f"Discovered new switch at IP {mgmt_ip}", color="green")
                         discovered_switches.append({
                             'ip': mgmt_ip,
                             'name': system_name
+                        })
+                    elif (not mgmt_ip or mgmt_ip == "0.0.0.0") and chassis_id:
+                        # We have a switch with unknown IP but we have its MAC address
+                        switch_op._debug_message(f"Found switch with unknown IP, MAC: {chassis_id}", color="yellow")
+                        unknown_ip_switches.append({
+                            'name': system_name,
+                            'chassis_id': chassis_id,
+                            'port': port
                         })
                         
                 elif is_ap:
@@ -858,6 +836,28 @@ class DirectZTPProcess:
                     logger.info(f"Unknown device type on port {port}: {system_name}, {port_desc}")
                     switch_op._debug_message(f"Unknown device type - skipping port {port}", color="red")
             
+            # If we found switches with unknown IPs, use trace-l2 to try to discover them
+            if unknown_ip_switches:
+                switch_op._debug_message(f"Found {len(unknown_ip_switches)} switches with unknown IPs. Using trace-l2 to discover their IPs", color="blue")
+                ip_mac_mapping = self._get_trace_l2_data(switch_op)
+                
+                if ip_mac_mapping:
+                    # Match discovered MAC addresses to the unknown switches
+                    for unknown_switch in unknown_ip_switches:
+                        chassis_id = unknown_switch['chassis_id']
+                        if chassis_id in ip_mac_mapping:
+                            discovered_ip = ip_mac_mapping[chassis_id]
+                            switch_op._debug_message(f"Found IP {discovered_ip} for switch {unknown_switch['name']} (MAC: {chassis_id})", color="green")
+                            
+                            # Add to discovered switches
+                            if discovered_ip not in self.inventory['switches']:
+                                discovered_switches.append({
+                                    'ip': discovered_ip,
+                                    'name': unknown_switch['name']
+                                })
+                        else:
+                            switch_op._debug_message(f"Could not find IP for switch {unknown_switch['name']} (MAC: {chassis_id})", color="red")
+            
             # Add discovered switches to inventory and queue them for configuration
             if discovered_switches:
                 switch_op._debug_message(f"Found {len(discovered_switches)} new switches to add to inventory", color="blue")
@@ -873,18 +873,165 @@ class DirectZTPProcess:
             logger.error(error_msg, exc_info=True)
             switch_op._debug_message(error_msg, color="red")
             return False
+            
+    def _get_trace_l2_data(self, switch_op):
+        """
+        Use trace-l2 to discover IP addresses of neighbor switches.
+        
+        Args:
+            switch_op: DirectSwitchOperation instance
+            
+        Returns:
+            Dictionary mapping MAC addresses to IP addresses
+        """
+        try:
+            # Initialize results
+            ip_mac_map = {}
+            
+            # Step 1: Run trace-l2 on VLAN 1 (default VLAN)
+            switch_op._debug_message("Running trace-l2 on VLAN 1 to discover devices", color="blue")
+            switch_op.channel.send("trace-l2 vlan 1\n")
+            time.sleep(2)
+            
+            if switch_op.channel.recv_ready():
+                init_response = switch_op.channel.recv(4096).decode('utf-8', errors='replace')
+                switch_op._debug_message(f"Initial trace-l2 response: {init_response}", color="green")
+            
+            # Step 2: Wait for the trace-l2 discovery to complete (it runs in the background)
+            switch_op._debug_message("Waiting for trace-l2 discovery to complete (5 seconds)...", color="yellow")
+            time.sleep(5)
+            
+            # Step 3: Get the trace-l2 results
+            for attempt in range(1, 4):  # Make up to 3 attempts
+                switch_op._debug_message(f"Getting trace-l2 results (attempt {attempt}/3)...", color="yellow")
+                switch_op.channel.send("trace-l2 show\n")
+                time.sleep(2)
+                
+                trace_output = ""
+                if switch_op.channel.recv_ready():
+                    trace_output = switch_op.channel.recv(4096).decode('utf-8', errors='replace')
+                    switch_op._debug_message(f"Trace-l2 results received ({len(trace_output)} bytes)", color="green")
+                    
+                    # Parse the trace-l2 output to extract MAC to IP mappings
+                    ip_mac_map = self._parse_trace_l2_output(trace_output, switch_op)
+                    
+                    # If we got data, we can break out of the loop
+                    if ip_mac_map:
+                        switch_op._debug_message(f"Successfully extracted {len(ip_mac_map)} MAC-to-IP mappings", color="green")
+                        break
+                else:
+                    switch_op._debug_message("No trace-l2 results received", color="red")
+                
+                # If this wasn't the last attempt, wait before trying again
+                if attempt < 3:
+                    switch_op._debug_message("Waiting 3 more seconds before retry...", color="yellow")
+                    time.sleep(3)
+            
+            return ip_mac_map
+            
+        except Exception as e:
+            error_msg = f"Error getting trace-l2 data: {e}"
+            logger.error(error_msg, exc_info=True)
+            switch_op._debug_message(error_msg, color="red")
+            return {}
+            
+    def _parse_trace_l2_output(self, output, switch_op):
+        """
+        Parse the output of trace-l2 show command to extract MAC to IP mappings.
+        
+        Args:
+            output: String output from trace-l2 show command
+            switch_op: DirectSwitchOperation instance for debug messages
+            
+        Returns:
+            Dictionary mapping MAC addresses to IP addresses
+        """
+        ip_mac_map = {}
+        
+        try:
+            # Define patterns to match paths and hops
+            path_pattern = re.compile(r'path \d+ from (.+),')
+            hop_pattern = re.compile(r'  \d+\s+(\S+)\s+(?:\S+)?\s+(\d+\.\d+\.\d+\.\d+)\s+([0-9a-f\.]+)')
+            
+            current_path = None
+            
+            switch_op._debug_message("Parsing trace-l2 output for MAC-to-IP mappings", color="yellow")
+            
+            # Process each line in the output
+            for line in output.splitlines():
+                # Check for new path
+                path_match = path_pattern.match(line)
+                if path_match:
+                    current_path = path_match.group(1).strip()
+                    switch_op._debug_message(f"Found path from {current_path}", color="yellow")
+                    continue
+                    
+                # Check for hop information
+                hop_match = hop_pattern.match(line)
+                if hop_match:
+                    port, ip, mac = hop_match.groups()
+                    mac = mac.lower()  # Normalize MAC address
+                    
+                    # Store IP and MAC mapping if they're valid
+                    if ip != '0.0.0.0' and mac != '0000.0000.0000':
+                        ip_mac_map[mac] = ip
+                        switch_op._debug_message(f"Found device in trace-l2: MAC={mac}, IP={ip}", color="green")
+            
+            switch_op._debug_message(f"Extracted {len(ip_mac_map)} MAC-to-IP mappings from trace-l2 output", color="blue")
+            return ip_mac_map
+            
+        except Exception as e:
+            error_msg = f"Error parsing trace-l2 output: {e}"
+            logger.error(error_msg, exc_info=True)
+            switch_op._debug_message(error_msg, color="red")
+            return ip_mac_map  # Return whatever we've managed to parse so far
     
     def _configure_switch_port(self, switch_op, port):
         """Configure a switch-to-switch trunk port"""
         try:
-            # Enter configuration mode first
+            # First check if we're in the right mode by sending a blank line
+            switch_op._debug_message(f"Checking current mode before configuring switch port {port}", color="blue")
+            switch_op.channel.send("\n")
+            time.sleep(1)
+            current_prompt = ""
+            
+            if switch_op.channel.recv_ready():
+                current_prompt = switch_op.channel.recv(4096).decode('utf-8', errors='replace')
+                switch_op._debug_message(f"Current prompt: {current_prompt}", color="green")
+            
+            # If we don't see a # character, we're not in enable mode
+            if '#' not in current_prompt:
+                switch_op._debug_message(f"Not in enable mode, entering enable mode", color="yellow")
+                switch_op.channel.send("enable\n")
+                time.sleep(1)
+                
+                if switch_op.channel.recv_ready():
+                    enable_response = switch_op.channel.recv(4096).decode('utf-8', errors='replace')
+                    switch_op._debug_message(f"Enable mode response: {enable_response}", color="green")
+                    
+                    # Check if password is required
+                    if "Password:" in enable_response:
+                        switch_op._debug_message(f"Sending enable password", color="yellow")
+                        switch_op.channel.send(f"{switch_op.password}\n")
+                        time.sleep(1)
+                        
+                        if switch_op.channel.recv_ready():
+                            pw_response = switch_op.channel.recv(4096).decode('utf-8', errors='replace')
+                            switch_op._debug_message(f"Password response: {pw_response}", color="green")
+            
+            # Enter configuration mode
             switch_op._debug_message(f"Entering configuration mode to configure switch port {port}", color="blue")
             switch_op.channel.send("configure terminal\n")
-            time.sleep(1)
+            time.sleep(2)
             
             if switch_op.channel.recv_ready():
                 config_response = switch_op.channel.recv(4096).decode('utf-8', errors='replace')
                 switch_op._debug_message(f"Config mode response: {config_response}", color="green")
+                
+                # Error checking
+                if "error" in config_response.lower() or "invalid" in config_response.lower():
+                    switch_op._debug_message(f"Failed to enter configuration mode: {config_response}", color="red")
+                    return False
             
             # Enter interface config
             switch_op._debug_message(f"Configuring switch-to-switch trunk port {port}", color="yellow")
@@ -1143,6 +1290,7 @@ def parse_args():
                       help='Initial password for first-time login (default: sp-admin)')
     parser.add_argument('--discover-switches', action='store_true',
                       help='Discover and configure neighboring switches')
+    # Note: trace-l2 is always used when LLDP reports 0.0.0.0 IP addresses for switches
     parser.add_argument('--debug', action='store_true',
                       help='Enable debug mode')
     
@@ -1304,6 +1452,8 @@ def main():
     config['debug'] = args.debug or True  # Always enable debug for testing
     config['debug_callback'] = debug_callback
     
+    # trace-l2 is always used when needed
+    
     # Print configuration details
     print("\n" + "=" * 60)
     print(f"CONFIGURATION DETAILS")
@@ -1311,6 +1461,7 @@ def main():
     print(f"Config file: {args.config}")
     print(f"Switch IP: {args.ip}")
     print(f"Debug mode: {'Enabled' if args.debug else 'Disabled'}")
+    print(f"Trace-l2: Automatically used when LLDP reports 0.0.0.0 IP addresses")
     print(f"Base config file: {config['network'].get('base_config_file')}")
     print(f"Management VLAN: {config['network'].get('management_vlan')}")
     print(f"Wireless VLANs: {config['network'].get('wireless_vlans')}")
@@ -1322,6 +1473,7 @@ def main():
     logger.info(f"Config file: {args.config}")
     logger.info(f"Switch IP: {args.ip}")
     logger.info(f"Debug mode: {'Enabled' if args.debug else 'Disabled'}")
+    logger.info("Trace-l2: Automatically used when LLDP reports 0.0.0.0 IP addresses")
     logger.info(f"Base config file: {config['network'].get('base_config_file')}")
     logger.info(f"Management VLAN: {config['network'].get('management_vlan')}")
     logger.info(f"Wireless VLANs: {config['network'].get('wireless_vlans')}")
@@ -1357,6 +1509,7 @@ def main():
     config['switch_username'] = args.username
     config['switch_initial_password'] = args.initial_password
     config['discover_switches'] = args.discover_switches
+    # trace-l2 is always enabled when needed
     
     # Add seed switch
     logger.info(f"Adding seed switch {args.ip}")
