@@ -133,6 +133,9 @@ class BaseConnection:
                 logger.error(f"Did not receive expected prompt from switch {self.ip}")
                 return False
             
+            # Disable pagination for clean programmatic parsing
+            self._disable_pagination()
+            
             self.connected = True
             logger.info(f"Connected to switch {self.ip}")
             return True
@@ -205,6 +208,63 @@ class BaseConnection:
         except Exception as e:
             logger.error(f"Error handling first-time login for switch {self.ip}: {e}", exc_info=True)
             return False
+    
+    def _disable_pagination(self) -> None:
+        """
+        Disable pagination on the switch for clean programmatic output.
+        Uses 'skip-page-display' command in enable mode.
+        """
+        try:
+            if self.debug and self.debug_callback:
+                self.debug_callback("Disabling pagination with skip-page-display", "yellow")
+            
+            # Enter enable mode (no password required as mentioned)
+            self.shell.send("enable\n")
+            time.sleep(1)
+            
+            # Read enable mode response
+            enable_output = ""
+            while self.shell.recv_ready():
+                chunk = self.shell.recv(4096).decode('utf-8', errors='ignore')
+                enable_output += chunk
+                time.sleep(0.1)
+            
+            if self.debug and self.debug_callback:
+                self.debug_callback(f"Enable mode output: {enable_output}", "cyan")
+            
+            # Send skip-page-display command
+            self.shell.send("skip-page-display\n")
+            time.sleep(1)
+            
+            # Read skip-page-display response
+            skip_output = ""
+            while self.shell.recv_ready():
+                chunk = self.shell.recv(4096).decode('utf-8', errors='ignore')
+                skip_output += chunk
+                time.sleep(0.1)
+            
+            if self.debug and self.debug_callback:
+                self.debug_callback(f"Skip-page-display output: {skip_output}", "cyan")
+            
+            # Exit back to user mode
+            self.shell.send("exit\n")
+            time.sleep(1)
+            
+            # Read exit response
+            exit_output = ""
+            while self.shell.recv_ready():
+                chunk = self.shell.recv(4096).decode('utf-8', errors='ignore')
+                exit_output += chunk
+                time.sleep(0.1)
+            
+            if "Disable page display mode" in skip_output:
+                logger.info(f"Successfully disabled pagination on switch {self.ip}")
+            else:
+                logger.warning(f"Pagination disable may not have worked on switch {self.ip}")
+                
+        except Exception as e:
+            logger.warning(f"Failed to disable pagination on switch {self.ip}: {e}")
+            # Don't fail the connection for this
     
     def disconnect(self) -> None:
         """Disconnect from the switch."""
@@ -282,10 +342,21 @@ class BaseConnection:
     def enter_config_mode(self) -> bool:
         """
         Enter configuration mode.
+        On RUCKUS ICX switches, this requires enable mode first.
         
         Returns:
             True if successful, False otherwise.
         """
+        # First enter enable mode
+        success, output = self.run_command("enable")
+        if not success:
+            logger.error(f"Failed to enter enable mode on switch {self.ip}: {output}")
+            return False
+        
+        if self.debug and self.debug_callback:
+            self.debug_callback("Entered enable mode", "green")
+        
+        # Now enter configuration mode
         success, output = self.run_command("configure terminal")
         
         if success and "(config)" in output:
@@ -307,14 +378,14 @@ class BaseConnection:
             True if successful, False otherwise.
         """
         try:
-            # Exit config mode
+            # Exit config mode (to enable mode)
             success, output = self.run_command("exit")
             
             if not success:
                 logger.error(f"Failed to exit config mode on switch {self.ip}: {output}")
                 return False
             
-            # Save configuration if requested
+            # Save configuration if requested (in enable mode)
             if save:
                 success, output = self.run_command("write memory")
                 if not success:
@@ -323,6 +394,12 @@ class BaseConnection:
                     
                 if self.debug and self.debug_callback:
                     self.debug_callback("Configuration saved", "green")
+            
+            # Exit enable mode back to user mode
+            success, output = self.run_command("exit")
+            if not success:
+                logger.warning(f"Failed to exit enable mode on switch {self.ip}: {output}")
+                # Don't fail for this, we're still functional
             
             return True
             

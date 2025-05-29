@@ -35,6 +35,13 @@ class DeviceInfo:
             logger.debug(f"Detected model {self.model} for switch {self.ip}")
             return self.model
         
+        # Pattern for ICX8200 format: "HW: Stackable ICX8200-C08PF-POE"
+        model_match = re.search(r'HW:\s+Stackable\s+(ICX\S+)', output, re.IGNORECASE)
+        if model_match:
+            self.model = model_match.group(1)
+            logger.debug(f"Detected model {self.model} for switch {self.ip}")
+            return self.model
+        
         # Alternative pattern
         model_match = re.search(r'System\s+Type:\s*(\S+)', output, re.IGNORECASE)
         if model_match:
