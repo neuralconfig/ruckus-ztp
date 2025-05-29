@@ -99,7 +99,8 @@ class TestZTPProcessIntegration:
         success = ztp_process.add_switch(
             switch_ip,
             os.getenv('SWITCH_USER', 'super'),
-            os.getenv('SWITCH_PASS', 'sp-admin')
+            os.getenv('SWITCH_PASS', 'sp-admin'),
+            preferred_password=os.getenv('SWITCH_NEW_PASS', 'sp-admin')
         )
         assert success is True
         
@@ -138,7 +139,8 @@ class TestZTPProcessIntegration:
         success = ztp_process.add_switch(
             switch_ip,
             os.getenv('SWITCH_USER', 'super'),
-            os.getenv('SWITCH_PASS', 'sp-admin')
+            os.getenv('SWITCH_PASS', 'sp-admin'),
+            preferred_password=os.getenv('SWITCH_NEW_PASS', 'sp-admin')
         )
         assert success is True
         
@@ -170,7 +172,8 @@ class TestZTPConfigurationIntegration:
         success = ztp_process.add_switch(
             switch_ip,
             os.getenv('SWITCH_USER', 'super'),
-            os.getenv('SWITCH_PASS', 'sp-admin')
+            os.getenv('SWITCH_PASS', 'sp-admin'),
+            preferred_password=os.getenv('SWITCH_NEW_PASS', 'sp-admin')
         )
         assert success is True
         
