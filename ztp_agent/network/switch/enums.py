@@ -1,14 +1,14 @@
 """
-Enumeration classes for switch operations.
+Enumerations for switch operations.
 """
 from enum import Enum
 
-class PortStatus(str, Enum):
-    """Port administrative status"""
+class PortStatus(Enum):
+    """Port status enumeration"""
     ENABLE = "enable"
     DISABLE = "disable"
 
-class PoEStatus(str, Enum):
-    """PoE status"""
-    ENABLED = "enabled"
-    DISABLED = "disabled"
+class PoEStatus(Enum):
+    """PoE status enumeration"""
+    ENABLED = "enable"
+    DISABLED = "disable"
