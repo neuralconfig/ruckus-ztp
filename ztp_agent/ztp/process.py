@@ -7,7 +7,7 @@ import time
 import re
 import socket
 import paramiko
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Callable
 import ipaddress
 
 # Set up logging
@@ -27,9 +27,13 @@ class ZTPProcess:
         self.running = False
         self.thread = None
         self.inventory = {
-            'switches': {},
-            'aps': {}
+            'switches': {},  # Keyed by MAC address
+            'aps': {},      # Keyed by MAC address
+            'ip_to_mac': {}  # IP to MAC mapping for quick lookups
         }
+        
+        # Store credentials for later use in discovering switches
+        self.available_credentials = config.get('credentials', [])
         
         # Get network configuration
         network_config = config.get('network', {})
@@ -52,8 +56,84 @@ class ZTPProcess:
         
         logger.info("Initialized ZTP process")
     
+    def _create_inventory_update_callback(self) -> Callable[[str, dict], None]:
+        """
+        Create a callback to update inventory with SSH activity status.
+        
+        Returns:
+            Function that updates inventory when called with IP and updates dict.
+        """
+        def update_callback(ip: str, updates: dict) -> None:
+            try:
+                # Try to find the device by IP in the IP-to-MAC mapping
+                mac = self.inventory['ip_to_mac'].get(ip)
+                
+                if mac:
+                    # Update switch inventory by MAC
+                    if mac in self.inventory['switches']:
+                        self.inventory['switches'][mac].update(updates)
+                        # Log SSH activity for debugging
+                        if 'ssh_active' in updates:
+                            action = "connected to" if updates['ssh_active'] else "disconnected from"
+                            logger.debug(f"SSH {action} switch {ip} (MAC: {mac})")
+                    # Update AP inventory by MAC
+                    elif mac in self.inventory['aps']:
+                        self.inventory['aps'][mac].update(updates)
+                        if 'ssh_active' in updates:
+                            action = "connected to" if updates['ssh_active'] else "disconnected from"
+                            logger.debug(f"SSH {action} AP {ip} (MAC: {mac})")
+                else:
+                    # Fallback: try to find in switches by IP for compatibility
+                    for switch_mac, switch_data in self.inventory['switches'].items():
+                        if switch_data.get('ip') == ip:
+                            switch_data.update(updates)
+                            if 'ssh_active' in updates:
+                                action = "connected to" if updates['ssh_active'] else "disconnected from"
+                                logger.debug(f"SSH {action} switch {ip} (MAC: {switch_mac})")
+                            break
+                    else:
+                        # Fallback: try to find in APs by IP for compatibility
+                        for ap_mac, ap_data in self.inventory['aps'].items():
+                            if ap_data.get('ip') == ip:
+                                ap_data.update(updates)
+                                if 'ssh_active' in updates:
+                                    action = "connected to" if updates['ssh_active'] else "disconnected from"
+                                    logger.debug(f"SSH {action} AP {ip} (MAC: {ap_mac})")
+                                break
+                                
+            except Exception as e:
+                logger.debug(f"Error updating inventory for {ip}: {e}")
+                
+        return update_callback
+    
+    def _set_device_configuring(self, ip: str, configuring: bool = True):
+        """
+        Mark a device as actively being configured.
+        
+        Args:
+            ip: IP address of the device
+            configuring: True if actively configuring, False otherwise
+        """
+        mac = self.inventory['ip_to_mac'].get(ip)
+        if mac:
+            if mac in self.inventory['switches']:
+                self.inventory['switches'][mac]['configuring'] = configuring
+            elif mac in self.inventory['aps']:
+                self.inventory['aps'][mac]['configuring'] = configuring
+        else:
+            # Fallback lookup
+            for switch_mac, switch_data in self.inventory['switches'].items():
+                if switch_data.get('ip') == ip:
+                    switch_data['configuring'] = configuring
+                    break
+            else:
+                for ap_mac, ap_data in self.inventory['aps'].items():
+                    if ap_data.get('ip') == ip:
+                        ap_data['configuring'] = configuring
+                        break
+    
     def add_switch(self, ip: str, username: str, password: str, preferred_password: str = None, 
-                  debug: bool = None, debug_callback = None) -> bool:
+                  debug: bool = None, debug_callback = None, suppress_errors: bool = False) -> bool:
         """
         Add a switch to the inventory.
         
@@ -64,6 +144,7 @@ class ZTPProcess:
             preferred_password: Password to set during first-time login.
             debug: Whether to enable debug mode for this switch.
             debug_callback: Function to call with debug messages.
+            suppress_errors: If True, don't log connection errors (for credential cycling).
             
         Returns:
             True if successful, False otherwise.
@@ -89,21 +170,40 @@ class ZTPProcess:
                 timeout=30,
                 preferred_password=preferred_password,
                 debug=debug,
-                debug_callback=debug_callback
+                debug_callback=debug_callback,
+                inventory_update_callback=self._create_inventory_update_callback()
             )
             
             # Test connection
             if not switch_op.connect():
-                logger.error(f"Failed to connect to switch {ip}")
+                if not suppress_errors:
+                    logger.error(f"Failed to connect to switch {ip}")
                 return False
             
-            # Get model and serial number
-            model = switch_op.model
-            serial = switch_op.serial
+            # Get model, serial, and MAC address by calling the methods
+            model = switch_op.get_model()
+            serial = switch_op.get_serial()
+            mac = switch_op.get_chassis_mac()
             hostname = switch_op.hostname
             
-            # Add to inventory
-            self.inventory['switches'][ip] = {
+            # Check if we got a MAC address
+            if not mac:
+                logger.error(f"Could not get MAC address for switch {ip}")
+                switch_op.disconnect()
+                return False
+            
+            # Check if switch already exists by MAC
+            if mac in self.inventory['switches']:
+                existing_switch = self.inventory['switches'][mac]
+                logger.info(f"Switch {ip} already in inventory with MAC {mac}, updating IP from {existing_switch.get('ip')} to {ip}")
+                existing_switch['ip'] = ip
+                self.inventory['ip_to_mac'][ip] = mac
+                switch_op.disconnect()
+                return True
+            
+            # Add to inventory by MAC
+            self.inventory['switches'][mac] = {
+                'mac': mac,
                 'ip': ip,
                 'username': username,
                 'password': password,
@@ -115,38 +215,64 @@ class ZTPProcess:
                 'configured': False,
                 'base_config_applied': False,  # Track if base config has been applied
                 'neighbors': {},
-                'ports': {}
+                'ports': {},
+                'is_seed': True,  # Mark as seed switch
+                'ssh_active': False  # Track SSH activity
             }
+            
+            # Also maintain IP to MAC mapping
+            self.inventory['ip_to_mac'][ip] = mac
             
             # Disconnect
             switch_op.disconnect()
             
-            logger.info(f"Added switch {ip} to inventory (Model: {model}, Serial: {serial})")
+            logger.info(f"Added switch {ip} to inventory (MAC: {mac}, Model: {model}, Serial: {serial})")
             return True
         
         except ValueError:
-            logger.error(f"Invalid IP address: {ip}")
+            if not suppress_errors:
+                logger.error(f"Invalid IP address: {ip}")
             return False
         except paramiko.ssh_exception.AuthenticationException as e:
-            logger.error(f"Authentication failed for switch {ip}: {e}")
-            logger.error(f"Verify that the username '{username}' and password are correct.")
-            logger.error(f"For first-time login, try using default credentials.")
+            if not suppress_errors:
+                logger.error(f"Authentication failed for switch {ip}: {e}")
+                logger.error(f"Verify that the username '{username}' and password are correct.")
+                logger.error(f"For first-time login, try using default credentials.")
             return False
         except paramiko.ssh_exception.NoValidConnectionsError as e:
-            logger.error(f"Connection error to switch {ip}: {e}")
-            logger.error(f"Make sure SSH (port 22) is enabled and accessible on the switch.")
+            if not suppress_errors:
+                logger.error(f"Connection error to switch {ip}: {e}")
+                logger.error(f"Make sure SSH (port 22) is enabled and accessible on the switch.")
             return False
         except paramiko.ssh_exception.SSHException as e:
-            logger.error(f"SSH error for switch {ip}: {e}")
+            if not suppress_errors:
+                logger.error(f"SSH error for switch {ip}: {e}")
             return False
         except socket.timeout as e:
-            logger.error(f"Connection timeout to switch {ip}: {e}")
-            logger.error(f"Check if the switch is reachable and responsive.")
+            if not suppress_errors:
+                logger.error(f"Connection timeout to switch {ip}: {e}")
+                logger.error(f"Check if the switch is reachable and responsive.")
             return False
         except Exception as e:
-            logger.error(f"Error adding switch {ip}: {e}", exc_info=True)
+            if not suppress_errors:
+                logger.error(f"Error adding switch {ip}: {e}", exc_info=True)
             return False
             
+    def get_switch_by_ip(self, ip: str) -> Optional[Dict[str, Any]]:
+        """
+        Get switch data by IP address.
+        
+        Args:
+            ip: IP address to look up.
+            
+        Returns:
+            Switch data or None if not found.
+        """
+        mac = self.inventory['ip_to_mac'].get(ip)
+        if mac:
+            return self.inventory['switches'].get(mac)
+        return None
+    
     def get_switch_info(self, ip: str) -> Dict[str, Any]:
         """
         Get information about a switch.
@@ -157,12 +283,13 @@ class ZTPProcess:
         Returns:
             Dictionary with switch information.
         """
-        if ip not in self.inventory['switches']:
+        switch = self.get_switch_by_ip(ip)
+        if not switch:
             return {}
         
-        switch = self.inventory['switches'][ip]
         return {
-            'ip': ip,
+            'mac': switch.get('mac'),
+            'ip': switch.get('ip'),
             'model': switch.get('model'),
             'serial': switch.get('serial'),
             'hostname': switch.get('hostname'),
@@ -294,9 +421,14 @@ class ZTPProcess:
         switches_to_check = list(self.inventory['switches'].items())
         
         # For each configured switch in our copy
-        for ip, switch in switches_to_check:
+        for mac, switch in switches_to_check:
+            ip = switch.get('ip')
+            if not ip:
+                logger.error(f"Switch {mac} has no IP address")
+                continue
+                
             try:
-                logger.debug(f"Checking for neighbors on switch {ip}")
+                logger.debug(f"Checking for neighbors on switch {ip} (MAC: {mac})")
                 
                 # Create switch operation instance
                 switch_op = SwitchOperation(
@@ -305,7 +437,8 @@ class ZTPProcess:
                     password=switch['password'],
                     preferred_password=switch.get('preferred_password'),
                     debug=self.debug,
-                    debug_callback=self.debug_callback
+                    debug_callback=self.debug_callback,
+                    inventory_update_callback=self._create_inventory_update_callback()
                 )
                 
                 # Connect to switch
@@ -333,59 +466,46 @@ class ZTPProcess:
                         ip_addr = neighbor.get('mgmt_address', 'Unknown IP')
                         logger.info(f"Discovered switch on port {port}: {neighbor.get('system_name', 'Unknown')} ({ip_addr})")
                         
-                        # Add to inventory if we have a valid IP and it's not already in inventory
-                        if ip_addr != 'Unknown IP' and ip_addr != '0.0.0.0':
-                            if ip_addr not in self.inventory['switches']:
-                                # Check if we actually want to add this switch (avoid circular references)
-                                if ip_addr != ip:  # Don't add the switch back to itself
-                                    logger.info(f"Adding discovered switch {ip_addr} to inventory")
-                                    
-                                    # Get the model and hostname if available
-                                    system_name = neighbor.get('system_name', '').strip('"')
-                                    system_description = neighbor.get('system_description', '').strip('"')
-                                    
-                                    # Extract model from system description if possible
-                                    model = None
-                                    if system_description:
-                                        model_match = re.search(r'ICX\d+[a-zA-Z0-9\-]+(?:-POE)?', system_description)
-                                        if model_match:
-                                            model = model_match.group(0)
-                                    
-                                    # Use the same credentials as the parent switch
-                                    self.inventory['switches'][ip_addr] = {
-                                        'ip': ip_addr,
-                                        'username': switch['username'],
-                                        'password': switch['password'],
-                                        'preferred_password': switch.get('preferred_password'),
-                                        'model': model,
-                                        'hostname': system_name or f"switch-{ip_addr.replace('.', '-')}",
-                                        'status': 'Discovered',
-                                        'configured': False,
-                                        'base_config_applied': False,  # Track if base config has been applied
-                                        'neighbors': {},
-                                        'ports': {}
-                                    }
+                        # Log discovered switch for later processing in neighbor configuration
+                        if ip_addr != 'Unknown IP' and ip_addr != '0.0.0.0' and ip_addr != ip:
+                            # Check if already tracked by IP-to-MAC mapping
+                            if ip_addr not in self.inventory.get('ip_to_mac', {}):
+                                logger.info(f"Discovered switch {ip_addr}, will be processed in neighbor configuration phase")
                             
                     elif neighbor.get('type') == 'ap':
                         ip_addr = neighbor.get('mgmt_address', 'Unknown IP')
-                        logger.info(f"Discovered AP on port {port}: {neighbor.get('system_name', 'Unknown')} ({ip_addr})")
+                        ap_mac = neighbor.get('chassis_id', '').lower()  # Normalize MAC to lowercase
+                        logger.info(f"Discovered AP on port {port}: {neighbor.get('system_name', 'Unknown')} (MAC: {ap_mac}, IP: {ip_addr})")
                         
-                        # Add to APs inventory if we have a valid IP
-                        if ip_addr != 'Unknown IP' and ip_addr != '0.0.0.0':
-                            if ip_addr not in self.inventory['aps']:
-                                logger.info(f"Adding discovered AP {ip_addr} to inventory")
+                        # Get the model and hostname if available
+                        system_name = neighbor.get('system_name', '').strip('"')
+                        
+                        # Add to APs inventory if we have a valid MAC
+                        if ap_mac:
+                            # Check if AP already exists by MAC
+                            if ap_mac in self.inventory['aps']:
+                                existing_ap = self.inventory['aps'][ap_mac]
+                                logger.info(f"AP {system_name} already in inventory with MAC {ap_mac}, updating IP from {existing_ap.get('ip')} to {ip_addr}")
+                                existing_ap['ip'] = ip_addr
+                                if ip_addr and ip_addr not in ['Unknown IP', '0.0.0.0']:
+                                    self.inventory['ip_to_mac'][ip_addr] = ap_mac
+                            else:
+                                logger.info(f"Adding discovered AP {ap_mac} to inventory")
                                 
-                                # Get the model and hostname if available
-                                system_name = neighbor.get('system_name', '').strip('"')
-                                
-                                self.inventory['aps'][ip_addr] = {
+                                self.inventory['aps'][ap_mac] = {
+                                    'mac': ap_mac,
                                     'ip': ip_addr,
                                     'model': system_name or 'Unknown AP',
-                                    'hostname': system_name or f"ap-{ip_addr.replace('.', '-')}",
+                                    'hostname': system_name or f"ap-{ap_mac.replace(':', '-')}",
                                     'status': 'Discovered',
                                     'switch_ip': ip,
-                                    'switch_port': port
+                                    'switch_port': port,
+                                    'ssh_active': False  # Track SSH activity
                                 }
+                                
+                                # Also maintain IP to MAC mapping if we have a valid IP
+                                if ip_addr and ip_addr not in ['Unknown IP', '0.0.0.0']:
+                                    self.inventory['ip_to_mac'][ip_addr] = ap_mac
                 
                 # Log total discoveries
                 switch_count = sum(1 for n in neighbors.values() if n.get('type') == 'switch')
@@ -413,7 +533,12 @@ class ZTPProcess:
         switches_to_configure = list(self.inventory['switches'].items())
         
         # For each switch that has neighbors
-        for ip, switch in switches_to_configure:
+        for mac, switch in switches_to_configure:
+            ip = switch.get('ip')
+            if not ip:
+                logger.error(f"Switch {mac} has no IP address")
+                continue
+                
             if 'neighbors' not in switch:
                 continue
             
@@ -433,31 +558,88 @@ class ZTPProcess:
         
         # PART 2: Configure basic settings on unconfigured switches
         # Get list of unconfigured switches
-        unconfigured_switches = [(ip, switch) for ip, switch in self.inventory['switches'].items() 
+        unconfigured_switches = [(mac, switch) for mac, switch in self.inventory['switches'].items() 
                                 if not switch.get('configured', False)]
         
-        for ip, switch in unconfigured_switches:
-            logger.info(f"Performing basic configuration on switch {ip}")
+        for mac, switch in unconfigured_switches:
+            ip = switch.get('ip')
+            if not ip:
+                logger.error(f"Switch {mac} has no IP address")
+                continue
+                
+            logger.info(f"Performing basic configuration on switch {ip} (MAC: {mac})")
             
             try:
-                # Create switch operation instance
-                switch_op = SwitchOperation(
-                    ip=ip,
-                    username=switch['username'],
-                    password=switch['password'],
-                    preferred_password=switch.get('preferred_password'),
-                    debug=self.debug,
-                    debug_callback=self.debug_callback
-                )
+                # Try to connect with credential cycling
+                connected = False
+                switch_op = None
                 
-                # Connect to switch
-                if not switch_op.connect():
-                    logger.error(f"Failed to connect to switch {ip} for basic configuration")
+                # Build list of credentials to try (stored first, then default, then others)
+                credentials_to_try = []
+                
+                # First try the stored credentials
+                stored_cred = {"username": switch['username'], "password": switch['password']}
+                credentials_to_try.append(stored_cred)
+                
+                # Then try default if not already tried
+                if not (stored_cred['username'] == 'super' and stored_cred['password'] == 'sp-admin'):
+                    credentials_to_try.append({"username": "super", "password": "sp-admin"})
+                
+                # Then try any other credentials
+                for cred in self.available_credentials:
+                    # Skip if already in list
+                    already_added = any(
+                        c['username'] == cred.get('username') and c['password'] == cred.get('password')
+                        for c in credentials_to_try
+                    )
+                    if not already_added:
+                        credentials_to_try.append(cred)
+                
+                # Try each credential
+                for cred in credentials_to_try:
+                    username = cred['username']
+                    password = cred['password']
+                    
+                    logger.debug(f"Trying to connect to switch {ip} for configuration with credentials {username}/{'*' * len(password)}")
+                    
+                    switch_op = SwitchOperation(
+                        ip=ip,
+                        username=username,
+                        password=password,
+                        preferred_password=switch.get('preferred_password'),
+                        debug=self.debug,
+                        debug_callback=self.debug_callback,
+                        inventory_update_callback=self._create_inventory_update_callback()
+                    )
+                    
+                    if switch_op.connect():
+                        connected = True
+                        # Update stored credentials if different
+                        if username != switch['username'] or password != switch['password']:
+                            logger.info(f"Updated working credentials for switch {ip}")
+                            switch['username'] = username
+                            switch['password'] = password
+                        break
+                
+                if not connected:
+                    logger.error(f"Failed to connect to switch {ip} for basic configuration with any available credentials")
                     continue
                 
                 # Determine hostname based on model and serial
-                model = switch.get('model') or switch_op.model
-                serial = switch.get('serial') or switch_op.serial
+                model = switch.get('model')
+                serial = switch.get('serial')
+                
+                # Get fresh info if not already stored
+                if not model:
+                    model = switch_op.get_model()
+                    if model:
+                        switch['model'] = model
+                        
+                if not serial:
+                    serial = switch_op.get_serial()
+                    if serial:
+                        switch['serial'] = serial
+                        
                 hostname = switch.get('hostname') or f"{model}-{serial}"
                 
                 # Get the management VLAN for basic configuration
@@ -490,21 +672,24 @@ class ZTPProcess:
                 
                 # STEP 1: Apply base configuration (which includes VLAN creation with spanning tree) if not already applied
                 if not switch.get('base_config_applied', False):
+                    self._set_device_configuring(ip, True)
                     logger.info(f"Sending base config to switch (length: {len(self.base_config)})")
                     success = switch_op.apply_base_config(self.base_config)
                     
                     if not success:
                         logger.error(f"Failed to configure VLANs on switch {ip}")
+                        self._set_device_configuring(ip, False)
                         switch_op.disconnect()
                         continue
                     
                     # Mark as base config applied
                     switch['base_config_applied'] = True
-                    self.inventory['switches'][ip]['base_config_applied'] = True
+                    self.inventory['switches'][mac]['base_config_applied'] = True
                 else:
                     logger.info(f"Base configuration already applied to switch {ip}, skipping")
                 
                 # STEP 2: Now perform basic configuration for management
+                logger.info(f"Configuring basic switch settings for {ip}")
                 success = switch_op.configure_switch_basic(
                     hostname=hostname,
                     mgmt_vlan=mgmt_vlan,
@@ -512,14 +697,16 @@ class ZTPProcess:
                     mgmt_mask=mgmt_mask
                 )
                 
+                self._set_device_configuring(ip, False)
+                
                 # Disconnect from switch
                 switch_op.disconnect()
                 
                 if success:
                     logger.info(f"Successfully configured switch {ip} with basic settings")
                     # Mark as configured
-                    self.inventory['switches'][ip]['configured'] = True
-                    self.inventory['switches'][ip]['status'] = 'Configured'
+                    self.inventory['switches'][mac]['configured'] = True
+                    self.inventory['switches'][mac]['status'] = 'Configured'
                 else:
                     logger.error(f"Failed to configure switch {ip} with basic settings")
             
@@ -547,14 +734,33 @@ class ZTPProcess:
             logger.warning(f"No valid IP address for switch {system_name} (MAC: {chassis_id}), skipping configuration")
             return
             
-        # Check if this switch is already in our inventory
-        if neighbor_ip in self.inventory['switches']:
-            logger.info(f"Switch {system_name} ({neighbor_ip}) is already in the inventory")
+        # Check if this switch is already in our inventory by MAC or IP
+        neighbor_mac = chassis_id.lower() if chassis_id != 'unknown' else None
+        already_exists = False
+        
+        if neighbor_mac and neighbor_mac in self.inventory['switches']:
+            logger.info(f"Switch {system_name} (MAC: {neighbor_mac}) is already in the inventory")
+            already_exists = True
+        elif neighbor_ip in self.inventory.get('ip_to_mac', {}):
+            existing_mac = self.inventory['ip_to_mac'][neighbor_ip]
+            logger.info(f"Switch {system_name} ({neighbor_ip}) is already in the inventory with MAC {existing_mac}")
+            already_exists = True
+            
+        if already_exists:
             return
             
         # Add the switch to our inventory
         # Default to same username/password as the parent switch
-        parent_switch = self.inventory['switches'][switch_ip]
+        # Find parent switch by IP
+        parent_switch = None
+        for mac, switch_data in self.inventory['switches'].items():
+            if switch_data.get('ip') == switch_ip:
+                parent_switch = switch_data
+                break
+                
+        if not parent_switch:
+            logger.error(f"Could not find parent switch {switch_ip} in inventory")
+            return
         
         # Import here to avoid circular imports
         from ztp_agent.network.switch import SwitchOperation
@@ -567,7 +773,8 @@ class ZTPProcess:
                 password=parent_switch['password'],
                 preferred_password=parent_switch.get('preferred_password'),
                 debug=self.debug,
-                debug_callback=self.debug_callback
+                debug_callback=self.debug_callback,
+                inventory_update_callback=self._create_inventory_update_callback()
             )
             
             # Connect to parent switch
@@ -584,7 +791,6 @@ class ZTPProcess:
                     
                     # Mark as base config applied
                     parent_switch['base_config_applied'] = True
-                    self.inventory['switches'][switch_ip]['base_config_applied'] = True
                 else:
                     logger.info(f"Base configuration already applied to switch {switch_ip}, skipping")
                 
@@ -598,47 +804,90 @@ class ZTPProcess:
                 # Disconnect from parent switch
                 switch_op.disconnect()
                 
-                # Try to connect to the new switch
-                new_switch_op = SwitchOperation(
-                    ip=neighbor_ip,
-                    username=parent_switch['username'],
-                    password=parent_switch['password'],
-                    preferred_password=parent_switch.get('preferred_password'),
-                    debug=self.debug,
-                    debug_callback=self.debug_callback
-                )
+                # Try to connect to the new switch with credential cycling
+                successfully_connected = False
+                working_username = None
+                working_password = None
                 
-                if new_switch_op.connect():
-                    # Successfully connected to the new switch
-                    model = new_switch_op.model
-                    serial = new_switch_op.serial
-                    hostname = new_switch_op.hostname
+                # Build list of credentials to try (default first, then user-added)
+                credentials_to_try = [{"username": "super", "password": "sp-admin"}]  # Default first
+                
+                # Add credentials from the stored list
+                for cred in self.available_credentials:
+                    # Skip if it's the same as default
+                    if not (cred.get('username') == 'super' and cred.get('password') == 'sp-admin'):
+                        credentials_to_try.append(cred)
+                
+                # Try each credential
+                for cred in credentials_to_try:
+                    username = cred['username']
+                    password = cred['password']
                     
-                    # Add the new switch to the inventory
-                    self.inventory['switches'][neighbor_ip] = {
-                        'ip': neighbor_ip,
-                        'username': parent_switch['username'],
-                        'password': parent_switch['password'],
-                        'preferred_password': parent_switch.get('preferred_password'),
-                        'model': model,
-                        'serial': serial,
-                        'hostname': hostname,
-                        'status': 'Discovered',  # Start with Discovered status
-                        'configured': False,     # Mark as not configured so it will be configured in next cycle
-                        'base_config_applied': False,  # Track if base config has been applied
-                        'neighbors': {},
-                        'discovered_from': {
-                            'switch_ip': switch_ip,
-                            'port': port
+                    logger.info(f"Trying to connect to discovered switch {neighbor_ip} with credentials {username}/{'*' * len(password)}")
+                    
+                    new_switch_op = SwitchOperation(
+                        ip=neighbor_ip,
+                        username=username,
+                        password=password,
+                        preferred_password=parent_switch.get('preferred_password'),
+                        debug=self.debug,
+                        debug_callback=self.debug_callback,
+                        inventory_update_callback=self._create_inventory_update_callback()
+                    )
+                    
+                    if new_switch_op.connect():
+                        # Successfully connected
+                        successfully_connected = True
+                        working_username = username
+                        working_password = password
+                        
+                        # Get device info by calling the methods
+                        model = new_switch_op.get_model()
+                        serial = new_switch_op.get_serial()
+                        new_switch_mac = new_switch_op.get_chassis_mac()
+                        hostname = new_switch_op.hostname
+                        
+                        # Check if we got a MAC address for the new switch
+                        if not new_switch_mac:
+                            logger.error(f"Could not get MAC address for discovered switch {neighbor_ip}")
+                            new_switch_op.disconnect()
+                            continue
+                        
+                        # Add the new switch to the inventory by MAC
+                        self.inventory['switches'][new_switch_mac] = {
+                            'mac': new_switch_mac,
+                            'ip': neighbor_ip,
+                            'username': working_username,
+                            'password': working_password,
+                            'preferred_password': parent_switch.get('preferred_password'),
+                            'model': model,
+                            'serial': serial,
+                            'hostname': hostname,
+                            'status': 'Discovered',  # Start with Discovered status
+                            'configured': False,     # Mark as not configured so it will be configured in next cycle
+                            'base_config_applied': False,  # Track if base config has been applied
+                            'neighbors': {},
+                            'ssh_active': False,
+                            'discovered_from': {
+                                'switch_ip': switch_ip,
+                                'port': port
+                            }
                         }
-                    }
-                    
-                    # Disconnect from new switch
-                    new_switch_op.disconnect()
-                    
-                    logger.info(f"Added discovered switch {system_name} (IP: {neighbor_ip}, Model: {model}, Serial: {serial}) to inventory")
-                else:
-                    logger.warning(f"Discovered switch {system_name} ({neighbor_ip}) but could not connect to it")
+                        
+                        # Also maintain IP to MAC mapping
+                        self.inventory['ip_to_mac'][neighbor_ip] = new_switch_mac
+                        
+                        # Disconnect from new switch
+                        new_switch_op.disconnect()
+                        
+                        logger.info(f"Successfully connected to discovered switch {system_name} (IP: {neighbor_ip}, Model: {model}, Serial: {serial}) with credentials {working_username}/{'*' * len(working_password)}")
+                        break
+                    else:
+                        # Connection failed with these credentials
+                        logger.debug(f"Failed to connect to discovered switch {neighbor_ip} with credentials {username}/{'*' * len(password)}")
+                
+                if not successfully_connected:
+                    logger.warning(f"Could not connect to discovered switch {system_name} ({neighbor_ip}) with any available credentials")
             else:
                 logger.error(f"Failed to connect to parent switch {switch_ip}")
         
@@ -661,34 +910,85 @@ class ZTPProcess:
         system_name = neighbor.get('system_name', 'Unknown')
         ap_ip = neighbor.get('mgmt_address')
         
-        # Skip if we don't have an IP address
-        if not ap_ip or ap_ip == '0.0.0.0':
-            logger.warning(f"No valid IP address for AP {system_name} (MAC: {chassis_id}), configuring port anyway")
-        else:
-            # Check if this AP is already in our inventory
-            if ap_ip in self.inventory['aps']:
-                logger.info(f"AP {system_name} ({ap_ip}) is already in the inventory")
-                # Continue with port configuration anyway
+        # Check if this AP is already in our inventory by MAC
+        if chassis_id:
+            ap_mac = chassis_id.lower()  # Normalize MAC
+            if ap_mac in self.inventory['aps']:
+                logger.info(f"AP {system_name} (MAC: {ap_mac}) is already in the inventory")
+                # Update IP if it changed
+                if ap_ip and ap_ip not in ['0.0.0.0', 'Unknown IP']:
+                    self.inventory['aps'][ap_mac]['ip'] = ap_ip
+                    self.inventory['ip_to_mac'][ap_ip] = ap_mac
         
         # Configure the port for the AP
-        parent_switch = self.inventory['switches'][switch_ip]
+        # Find parent switch by IP
+        parent_switch = None
+        for mac, switch_data in self.inventory['switches'].items():
+            if switch_data.get('ip') == switch_ip:
+                parent_switch = switch_data
+                break
+                
+        if not parent_switch:
+            logger.error(f"Could not find parent switch {switch_ip} in inventory")
+            return
         
         # Import here to avoid circular imports
         from ztp_agent.network.switch import SwitchOperation
         
         try:
-            # Configure the port on the switch for AP
-            switch_op = SwitchOperation(
-                ip=switch_ip,
-                username=parent_switch['username'],
-                password=parent_switch['password'],
-                preferred_password=parent_switch.get('preferred_password'),
-                debug=self.debug,
-                debug_callback=self.debug_callback
-            )
+            # Try to connect with credential cycling
+            connected = False
+            switch_op = None
+            
+            # Build list of credentials to try (stored first, then default, then others)
+            credentials_to_try = []
+            
+            # First try the stored credentials
+            stored_cred = {"username": parent_switch['username'], "password": parent_switch['password']}
+            credentials_to_try.append(stored_cred)
+            
+            # Then try default if not already tried
+            if not (stored_cred['username'] == 'super' and stored_cred['password'] == 'sp-admin'):
+                credentials_to_try.append({"username": "super", "password": "sp-admin"})
+            
+            # Then try any other credentials
+            for cred in self.available_credentials:
+                # Skip if already in list
+                already_added = any(
+                    c['username'] == cred.get('username') and c['password'] == cred.get('password')
+                    for c in credentials_to_try
+                )
+                if not already_added:
+                    credentials_to_try.append(cred)
+            
+            # Try each credential
+            for cred in credentials_to_try:
+                username = cred['username']
+                password = cred['password']
+                
+                logger.debug(f"Trying to connect to switch {switch_ip} for AP port config with credentials {username}/{'*' * len(password)}")
+                
+                switch_op = SwitchOperation(
+                    ip=switch_ip,
+                    username=username,
+                    password=password,
+                    preferred_password=parent_switch.get('preferred_password'),
+                    debug=self.debug,
+                    debug_callback=self.debug_callback,
+                    inventory_update_callback=self._create_inventory_update_callback()
+                )
+                
+                if switch_op.connect():
+                    connected = True
+                    # Update stored credentials if different
+                    if username != parent_switch['username'] or password != parent_switch['password']:
+                        logger.info(f"Updated working credentials for switch {switch_ip}")
+                        parent_switch['username'] = username
+                        parent_switch['password'] = password
+                    break
             
             # Connect to switch
-            if switch_op.connect():
+            if connected:
                 # Get VLAN configuration for port config
                 mgmt_vlan = self.mgmt_vlan
                 wireless_vlans = self.wireless_vlans
@@ -705,12 +1005,15 @@ class ZTPProcess:
                     
                     # Mark as base config applied
                     parent_switch['base_config_applied'] = True
-                    self.inventory['switches'][switch_ip]['base_config_applied'] = True
                 else:
                     logger.info(f"Base configuration already applied to switch {switch_ip}, skipping")
                 
                 # STEP 2: Configure the port for AP with specific tagged VLANs
+                self._set_device_configuring(switch_ip, True)
+                logger.info(f"Configuring port {port} on switch {switch_ip} for AP {system_name}")
                 success = switch_op.configure_ap_port(port, wireless_vlans, mgmt_vlan)
+                self._set_device_configuring(switch_ip, False)
+                
                 if success:
                     logger.info(f"Configured port {port} on switch {switch_ip} for AP {system_name}")
                 else:
@@ -719,21 +1022,24 @@ class ZTPProcess:
                 # Disconnect from switch
                 switch_op.disconnect()
                 
-                # Add the AP to our inventory if we have an IP
-                if ap_ip and ap_ip != '0.0.0.0':
-                    self.inventory['aps'][ap_ip] = {
-                        'ip': ap_ip,
-                        'mac': chassis_id,
+                # Add the AP to our inventory if we have a MAC
+                if chassis_id:
+                    ap_mac = chassis_id.lower()  # Normalize MAC
+                    self.inventory['aps'][ap_mac] = {
+                        'mac': ap_mac,
+                        'ip': ap_ip or 'Unknown IP',
                         'system_name': system_name,
                         'status': 'Configured',
-                        'connected_to': {
-                            'switch_ip': switch_ip,
-                            'port': port
-                        }
+                        'switch_ip': switch_ip,
+                        'switch_port': port,
+                        'ssh_active': False
                     }
-                    logger.info(f"Added AP {system_name} (IP: {ap_ip}, MAC: {chassis_id}) to inventory")
+                    # Also maintain IP to MAC mapping if we have a valid IP
+                    if ap_ip and ap_ip not in ['0.0.0.0', 'Unknown IP']:
+                        self.inventory['ip_to_mac'][ap_ip] = ap_mac
+                    logger.info(f"Added AP {system_name} (MAC: {ap_mac}, IP: {ap_ip}) to inventory")
             else:
-                logger.error(f"Failed to connect to switch {switch_ip}")
+                logger.error(f"Failed to connect to switch {switch_ip} for AP port configuration with any available credentials")
         
         except Exception as e:
             logger.error(f"Error configuring AP port for {system_name} on switch {switch_ip}: {e}", exc_info=True)

@@ -86,6 +86,34 @@ class DeviceInfo:
         logger.warning(f"Could not detect serial number for switch {self.ip}")
         return None
     
+    def get_chassis_mac(self) -> Optional[str]:
+        """
+        Get switch MAC address from show chassis.
+        
+        Returns:
+            Chassis MAC address or None if not found.
+        """
+        if hasattr(self, 'chassis_mac') and self.chassis_mac:
+            return self.chassis_mac
+            
+        success, output = self.run_command("show chassis | include Management")
+        
+        if not success:
+            logger.error(f"Failed to get chassis info from switch {self.ip}")
+            return None
+            
+        # Parse for management MAC
+        # Example: Management MAC: 94b3.4f30.4788
+        mac_match = re.search(r'Management MAC:\s+([0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4})', output)
+        
+        if mac_match:
+            self.chassis_mac = mac_match.group(1).lower()  # Normalize to lowercase
+            logger.debug(f"Detected chassis MAC {self.chassis_mac} for switch {self.ip}")
+            return self.chassis_mac
+            
+        logger.warning(f"Could not detect chassis MAC for switch {self.ip}")
+        return None
+    
     def get_firmware_version(self) -> Optional[str]:
         """
         Get firmware version from show version.
