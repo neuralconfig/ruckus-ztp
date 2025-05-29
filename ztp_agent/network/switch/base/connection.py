@@ -120,7 +120,9 @@ class BaseConnection:
                 self.debug_callback(f"Initial output: {initial_output}", "cyan")
             
             # Handle first-time login if needed
-            if "Enter new password:" in initial_output or "New password:" in initial_output:
+            if ("Enter new password:" in initial_output or 
+                "New password:" in initial_output or
+                "Enter the new password" in initial_output):
                 if not self._handle_first_time_login(initial_output):
                     return False
             
@@ -164,11 +166,15 @@ class BaseConnection:
                     chunk = self.shell.recv(4096).decode('utf-8', errors='ignore')
                     output += chunk
                     
-                    if "Re-enter new password:" in output or "Confirm new password:" in output:
+                    if ("Re-enter new password:" in output or 
+                        "Confirm new password:" in output or
+                        "Re-enter the new password" in output or
+                        "Enter the reconfirm password" in output or
+                        "Please confirm" in output):
                         break
                 time.sleep(1)
             else:
-                logger.error("Did not receive password confirmation prompt")
+                logger.error(f"Did not receive password confirmation prompt. Got: {output}")
                 return False
             
             # Confirm new password
@@ -186,10 +192,15 @@ class BaseConnection:
             if self.debug and self.debug_callback:
                 self.debug_callback(f"First-time login result: {final_output}", "cyan")
             
-            # Update current password
-            self.password = self.preferred_password
-            logger.info(f"Successfully changed password for switch {self.ip}")
-            return True
+            # Check if we have a valid prompt after password change
+            if re.search(r'>\s*$', final_output, re.MULTILINE):
+                # Update current password and combine outputs for final prompt check
+                self.password = self.preferred_password
+                initial_output += final_output  # Combine for final check
+                logger.info(f"Successfully changed password for switch {self.ip}")
+            else:
+                logger.error("No valid prompt after password change")
+                return False
             
         except Exception as e:
             logger.error(f"Error handling first-time login for switch {self.ip}: {e}", exc_info=True)
