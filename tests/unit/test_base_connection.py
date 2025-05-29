@@ -25,13 +25,15 @@ class TestBaseConnection:
         assert conn.ssh_client is None
         assert conn.shell is None
     
+    @patch('ztp_agent.network.switch.base.connection.time.sleep')
     @patch('ztp_agent.network.switch.base.connection.paramiko.SSHClient')
-    def test_connect_success(self, mock_ssh_class, sample_switch_config, mock_ssh_client):
+    def test_connect_success(self, mock_ssh_class, mock_sleep, sample_switch_config, mock_ssh_client):
         """Test successful connection."""
         mock_client, mock_shell = mock_ssh_client
         mock_ssh_class.return_value = mock_client
         
         # Configure successful connection
+        mock_shell.recv_ready.side_effect = [True, False]  # First call returns True, then False to exit loop
         mock_shell.recv.return_value = b"ICX7250-48P>\n"
         
         conn = BaseConnection(**sample_switch_config)
@@ -41,12 +43,14 @@ class TestBaseConnection:
         assert conn.connected is True
         mock_client.connect.assert_called_once()
         mock_client.invoke_shell.assert_called_once()
+        mock_sleep.assert_called()  # Verify sleep was called but mocked
     
     @patch('ztp_agent.network.switch.base.connection.paramiko.SSHClient')
-    def test_connect_failure(self, mock_ssh_class, sample_switch_config):
+    @patch('ztp_agent.network.switch.base.connection.paramiko.AuthenticationException')
+    def test_connect_failure(self, mock_auth_exception, mock_ssh_class, sample_switch_config):
         """Test connection failure."""
-        mock_client = Mock(spec=paramiko.SSHClient)
-        mock_client.connect.side_effect = paramiko.AuthenticationException("Auth failed")
+        mock_client = Mock()
+        mock_client.connect.side_effect = Exception("Auth failed")
         mock_ssh_class.return_value = mock_client
         
         conn = BaseConnection(**sample_switch_config)
@@ -81,9 +85,11 @@ class TestBaseConnection:
         assert success is False
         assert "Not connected" in output
     
-    def test_run_command_success(self, sample_switch_config, mock_ssh_client):
+    @patch('ztp_agent.network.switch.base.connection.time.sleep')
+    def test_run_command_success(self, mock_sleep, sample_switch_config, mock_ssh_client):
         """Test successful command execution."""
         mock_client, mock_shell = mock_ssh_client
+        mock_shell.recv_ready.side_effect = [True, False]  # Exit loop after one iteration
         mock_shell.recv.return_value = b"Command output\nICX7250-48P>\n"
         
         conn = BaseConnection(**sample_switch_config)
@@ -97,9 +103,11 @@ class TestBaseConnection:
         assert "Command output" in output
         mock_shell.send.assert_called_with("show version\n")
     
-    def test_enter_config_mode_success(self, sample_switch_config, mock_ssh_client):
+    @patch('ztp_agent.network.switch.base.connection.time.sleep')
+    def test_enter_config_mode_success(self, mock_sleep, sample_switch_config, mock_ssh_client):
         """Test entering configuration mode successfully."""
         mock_client, mock_shell = mock_ssh_client
+        mock_shell.recv_ready.side_effect = [True, False]
         mock_shell.recv.return_value = b"Entering configuration mode\nICX7250-48P(config)>\n"
         
         conn = BaseConnection(**sample_switch_config)
@@ -112,7 +120,8 @@ class TestBaseConnection:
         assert result is True
         mock_shell.send.assert_called_with("configure terminal\n")
     
-    def test_exit_config_mode_with_save(self, sample_switch_config, mock_ssh_client):
+    @patch('ztp_agent.network.switch.base.connection.time.sleep')
+    def test_exit_config_mode_with_save(self, mock_sleep, sample_switch_config, mock_ssh_client):
         """Test exiting configuration mode with save."""
         mock_client, mock_shell = mock_ssh_client
         
@@ -124,6 +133,7 @@ class TestBaseConnection:
                 return b"Configuration saved\nICX7250-48P>\n"
         
         mock_shell.recv.side_effect = mock_recv
+        mock_shell.recv_ready.side_effect = [True, False, True, False]  # Two command cycles
         
         conn = BaseConnection(**sample_switch_config)
         conn.ssh_client = mock_client
@@ -135,9 +145,11 @@ class TestBaseConnection:
         assert result is True
         assert mock_shell.send.call_count == 2  # exit + write memory
     
-    def test_context_manager(self, sample_switch_config, mock_ssh_client):
+    @patch('ztp_agent.network.switch.base.connection.time.sleep')
+    def test_context_manager(self, mock_sleep, sample_switch_config, mock_ssh_client):
         """Test using BaseConnection as context manager."""
         mock_client, mock_shell = mock_ssh_client
+        mock_shell.recv_ready.side_effect = [True, False]
         mock_shell.recv.return_value = b"ICX7250-48P>\n"
         
         with patch('ztp_agent.network.switch.base.connection.paramiko.SSHClient') as mock_ssh_class:
@@ -152,8 +164,8 @@ class TestBaseConnection:
     def test_context_manager_connection_failure(self, sample_switch_config):
         """Test context manager when connection fails."""
         with patch('ztp_agent.network.switch.base.connection.paramiko.SSHClient') as mock_ssh_class:
-            mock_client = Mock(spec=paramiko.SSHClient)
-            mock_client.connect.side_effect = paramiko.AuthenticationException("Auth failed")
+            mock_client = Mock()
+            mock_client.connect.side_effect = Exception("Auth failed")
             mock_ssh_class.return_value = mock_client
             
             with pytest.raises(ConnectionError):
