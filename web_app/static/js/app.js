@@ -7,6 +7,7 @@ let seedSwitches = [];
 let baseConfigs = {};
 let currentTab = 'config';
 let statusUpdateInterval;
+let topologyUpdateInterval;
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', function() {
@@ -70,6 +71,7 @@ function switchTab(tabName) {
     // Start/stop status updates
     if (tabName === 'monitoring') {
         startStatusUpdates();
+        stopTopologyUpdates(); // Stop topology updates when switching away
     } else {
         stopStatusUpdates();
     }
@@ -77,6 +79,9 @@ function switchTab(tabName) {
     // Load topology if switching to topology tab
     if (tabName === 'topology') {
         refreshTopology();
+        startTopologyUpdates(); // Start auto-refresh for topology
+    } else {
+        stopTopologyUpdates(); // Stop topology updates when switching away
     }
     
     // Load logs if switching to logs tab
@@ -366,6 +371,19 @@ async function startZTP() {
         // Save config first
         await saveConfig();
         
+        // Switch to monitoring tab immediately and set starting state locally
+        switchTab('monitoring');
+        
+        // Set UI to starting state immediately
+        const statusElement = document.getElementById('ztp-status');
+        const toggleButton = document.getElementById('ztp-toggle');
+        if (statusElement && toggleButton) {
+            statusElement.textContent = 'Starting...';
+            statusElement.className = 'status-indicator starting';
+            toggleButton.textContent = 'Starting...';
+            toggleButton.disabled = true;
+        }
+        
         const response = await fetch('/api/ztp/start', {
             method: 'POST'
         });
@@ -392,10 +410,6 @@ async function startZTP() {
                 
                 // Show notification for errors
                 showNotification(`${result.errors.length} seed switch connection error(s) - check monitoring tab`, 'warning');
-            }
-            
-            if (result.success) {
-                switchTab('monitoring');
             }
         } else {
             const error = await response.json();
@@ -456,6 +470,39 @@ function stopStatusUpdates() {
     }
 }
 
+// Topology auto-refresh functions
+function startTopologyUpdates() {
+    // Check if auto-refresh is enabled
+    const autoRefreshToggle = document.getElementById('auto-refresh-toggle');
+    if (!autoRefreshToggle || !autoRefreshToggle.checked) return;
+    
+    if (topologyUpdateInterval) return;
+    
+    topologyUpdateInterval = setInterval(async () => {
+        refreshTopology();
+    }, 10000); // Refresh every 10 seconds (less frequent than monitoring)
+}
+
+function stopTopologyUpdates() {
+    if (topologyUpdateInterval) {
+        clearInterval(topologyUpdateInterval);
+        topologyUpdateInterval = null;
+    }
+}
+
+function toggleAutoRefresh() {
+    const autoRefreshToggle = document.getElementById('auto-refresh-toggle');
+    if (autoRefreshToggle.checked) {
+        // Auto-refresh enabled - start if on topology tab
+        if (currentTab === 'topology') {
+            startTopologyUpdates();
+        }
+    } else {
+        // Auto-refresh disabled - stop updates
+        stopTopologyUpdates();
+    }
+}
+
 async function updateStatus() {
     try {
         const response = await fetch('/api/status');
@@ -469,10 +516,16 @@ async function updateStatus() {
             statusElement.textContent = 'Running';
             statusElement.className = 'status-indicator running';
             toggleButton.textContent = 'Stop';
+        } else if (status.starting) {
+            statusElement.textContent = 'Starting...';
+            statusElement.className = 'status-indicator starting';
+            toggleButton.textContent = 'Starting...';
+            toggleButton.disabled = true;
         } else {
             statusElement.textContent = 'Stopped';
             statusElement.className = 'status-indicator stopped';
             toggleButton.textContent = 'Start';
+            toggleButton.disabled = false;
         }
         
         // Update counters
@@ -559,6 +612,21 @@ async function updateDeviceList() {
     }
 }
 
+// Helper function to normalize interface names to x/y/z format
+function normalizeInterfaceName(interfaceName) {
+    if (!interfaceName) return '';
+    
+    // Match pattern like "GigabitEthernet1/1/7", "10GigabitEthernet1/1/1", "FastEthernet1/1/1", etc.
+    // and extract just the numeric portion (x/y/z)
+    const match = interfaceName.match(/(?:\d*[Gg]igabit[Ee]thernet|[Ff]ast[Ee]thernet|[Ee]thernet)?(\d+\/\d+\/\d+)/);
+    if (match) {
+        return match[1]; // Return just the x/y/z portion
+    }
+    
+    // If no match, return the original (might already be in x/y/z format)
+    return interfaceName;
+}
+
 // Topology Visualization
 function refreshTopology() {
     // Clear existing topology
@@ -591,13 +659,20 @@ function createTopologyDiagram(devices) {
     svg.attr('width', width).attr('height', height);
     
     // Create nodes and links
-    const nodes = devices.map(device => ({
-        id: device.ip,
-        type: device.device_type,
-        model: device.model,
-        status: device.status,
-        mac: device.mac
-    }));
+    const nodes = devices.map(device => {
+        // Debug: Check what hostname data we're receiving
+        if (device.device_type === 'switch') {
+            console.log(`Switch ${device.ip}: hostname="${device.hostname}", model="${device.model}"`);
+        }
+        return {
+            id: device.ip,
+            type: device.device_type,
+            hostname: device.hostname,
+            model: device.model,
+            status: device.status,
+            mac: device.mac
+        };
+    });
     
     const links = [];
     
@@ -607,10 +682,14 @@ function createTopologyDiagram(devices) {
             // Find the switch device
             const switchDevice = devices.find(d => d.ip === device.connected_switch);
             if (switchDevice) {
+                const normalizedConnectedPort = normalizeInterfaceName(device.connected_port);
                 links.push({
                     source: device.ip,
                     target: device.connected_switch,
-                    port: device.connected_port
+                    localPort: null, // APs don't have local port concept in this context
+                    remotePort: normalizedConnectedPort,
+                    sourceLabel: '', // APs don't have source interface label
+                    targetLabel: normalizedConnectedPort || ''
                 });
             }
         }
@@ -619,7 +698,7 @@ function createTopologyDiagram(devices) {
     // Also look for switch-to-switch connections in neighbor data
     devices.forEach(device => {
         if (device.device_type === 'switch' && device.neighbors) {
-            Object.values(device.neighbors).forEach(neighbor => {
+            Object.entries(device.neighbors).forEach(([localPort, neighbor]) => {
                 if (neighbor.type === 'switch' && neighbor.mgmt_address) {
                     const targetDevice = devices.find(d => d.ip === neighbor.mgmt_address);
                     if (targetDevice) {
@@ -629,10 +708,25 @@ function createTopologyDiagram(devices) {
                             (link.source === neighbor.mgmt_address && link.target === device.ip)
                         );
                         if (!linkExists) {
+                            // Get remote port, preferring port_description over port_id (which can be MAC)
+                            let remotePort = neighbor.port_description || neighbor.port_id || neighbor.port || '';
+                            
+                            // If remotePort looks like a MAC address, try to use a cleaner fallback
+                            if (remotePort && remotePort.includes(':') && remotePort.length >= 12) {
+                                remotePort = neighbor.port || 'Unknown';
+                            }
+                            
+                            // Normalize both interface names to x/y/z format
+                            const normalizedLocalPort = normalizeInterfaceName(localPort);
+                            const normalizedRemotePort = normalizeInterfaceName(remotePort);
+                            
                             links.push({
                                 source: device.ip,
                                 target: neighbor.mgmt_address,
-                                port: neighbor.port
+                                sourcePort: normalizedLocalPort,  // Interface on source switch
+                                targetPort: normalizedRemotePort, // Interface on target switch
+                                sourceLabel: normalizedLocalPort || '',
+                                targetLabel: normalizedRemotePort || ''
                             });
                         }
                     }
@@ -659,12 +753,24 @@ function createTopologyDiagram(devices) {
         .attr('stroke-opacity', 0.6)
         .attr('stroke-width', 2);
     
-    // Add port labels on links
-    const linkLabels = svg.append('g')
+    // Add port labels on links - source side labels
+    const sourceLinkLabels = svg.append('g')
         .selectAll('text')
         .data(uniqueLinks)
         .enter().append('text')
-        .text(d => d.port || '')
+        .text(d => d.sourceLabel || '')
+        .attr('font-family', 'Courier New, monospace')
+        .attr('font-size', '10px')
+        .attr('fill', '#00ff88')
+        .attr('text-anchor', 'middle')
+        .attr('dy', -5);
+    
+    // Add port labels on links - target side labels
+    const targetLinkLabels = svg.append('g')
+        .selectAll('text')
+        .data(uniqueLinks)
+        .enter().append('text')
+        .text(d => d.targetLabel || '')
         .attr('font-family', 'Courier New, monospace')
         .attr('font-size', '10px')
         .attr('fill', '#00ff88')
@@ -712,21 +818,46 @@ function createTopologyDiagram(devices) {
     // Store node groups for position updates
     const node = nodeGroups;
     
-    // Add labels
-    const label = svg.append('g')
+    // Add labels (hostname on top, IP below)
+    const hostnameLabel = svg.append('g')
         .selectAll('text')
         .data(nodes)
         .enter().append('text')
-        .text(d => d.id)
+        .text(d => {
+            // Only show hostname if it exists and is not just the literal string "hostname"
+            const hostname = d.hostname;
+            if (hostname && hostname !== 'hostname' && hostname !== 'unknown' && hostname.trim() !== '') {
+                return hostname;
+            }
+            return d.id; // Fallback to IP address
+        })
         .attr('font-family', 'Courier New, monospace')
-        .attr('font-size', '12px')
+        .attr('font-size', '11px')
         .attr('fill', '#ffffff')
         .attr('text-anchor', 'middle')
-        .attr('dy', -20);
+        .attr('dy', -25);
+        
+    const ipLabel = svg.append('g')
+        .selectAll('text')
+        .data(nodes)
+        .enter().append('text')
+        .text(d => {
+            // Only show IP if we have a real hostname (not just IP or literal "hostname")
+            const hostname = d.hostname;
+            if (hostname && hostname !== 'hostname' && hostname !== 'unknown' && hostname.trim() !== '' && hostname !== d.id) {
+                return d.id;
+            }
+            return ''; // Don't show IP if hostname is missing or same as IP
+        })
+        .attr('font-family', 'Courier New, monospace')
+        .attr('font-size', '9px')
+        .attr('fill', '#cccccc')
+        .attr('text-anchor', 'middle')
+        .attr('dy', -12);
     
     // Add tooltips
     node.append('title')
-        .text(d => `IP: ${d.id}\nMAC: ${d.mac || 'Unknown'}\nType: ${d.type.toUpperCase()}\nModel: ${d.model || 'Unknown'}\nStatus: ${d.status}`);
+        .text(d => `${d.hostname ? `Hostname: ${d.hostname}\n` : ''}IP: ${d.id}\nMAC: ${d.mac || 'Unknown'}\nType: ${d.type.toUpperCase()}\nModel: ${d.model || 'Unknown'}\nStatus: ${d.status}`);
     
     // Update positions on simulation tick
     simulation.on('tick', () => {
@@ -736,14 +867,24 @@ function createTopologyDiagram(devices) {
             .attr('x2', d => d.target.x)
             .attr('y2', d => d.target.y);
         
-        linkLabels
-            .attr('x', d => (d.source.x + d.target.x) / 2)
-            .attr('y', d => (d.source.y + d.target.y) / 2);
+        // Position source labels closer to source node
+        sourceLinkLabels
+            .attr('x', d => d.source.x + (d.target.x - d.source.x) * 0.25)
+            .attr('y', d => d.source.y + (d.target.y - d.source.y) * 0.25);
+        
+        // Position target labels closer to target node  
+        targetLinkLabels
+            .attr('x', d => d.source.x + (d.target.x - d.source.x) * 0.75)
+            .attr('y', d => d.source.y + (d.target.y - d.source.y) * 0.75);
         
         node
             .attr('transform', d => `translate(${d.x},${d.y})`);
         
-        label
+        hostnameLabel
+            .attr('x', d => d.x)
+            .attr('y', d => d.y);
+            
+        ipLabel
             .attr('x', d => d.x)
             .attr('y', d => d.y);
     });
@@ -782,6 +923,327 @@ function exportTopology() {
     
     URL.revokeObjectURL(url);
     showNotification('Topology diagram exported', 'success');
+}
+
+// AI Agent Functions
+function handleChatKeyPress(event) {
+    if (event.key === 'Enter') {
+        sendChatMessage();
+    }
+}
+
+async function sendChatMessage() {
+    const input = document.getElementById('chat-input');
+    const message = input.value.trim();
+    
+    if (!message) return;
+    
+    // Clear input
+    input.value = '';
+    
+    // Add user message to chat
+    addChatMessage(message, 'user');
+    
+    // Try WebSocket first, fallback to SSE
+    try {
+        await sendChatMessageWebSocket(message);
+    } catch (error) {
+        console.log('WebSocket failed, falling back to SSE:', error);
+        await sendChatMessageSSE(message);
+    }
+}
+
+async function sendChatMessageWebSocket(message) {
+    // Create a streaming message container for the assistant response
+    const streamingMessageId = 'streaming-' + Date.now();
+    const messagesContainer = document.getElementById('chat-messages');
+    
+    const streamingDiv = document.createElement('div');
+    streamingDiv.id = streamingMessageId;
+    streamingDiv.className = 'chat-message assistant';
+    
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'message-content';
+    contentDiv.innerHTML = '<strong>AI Assistant:</strong><br><span class="streaming-content"></span>';
+    
+    streamingDiv.appendChild(contentDiv);
+    messagesContainer.appendChild(streamingDiv);
+    
+    const streamingContent = streamingDiv.querySelector('.streaming-content');
+    
+    // Scroll to bottom
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    
+    return new Promise((resolve, reject) => {
+        // Create WebSocket connection
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${protocol}//${window.location.host}/ws/chat`);
+        
+        ws.onopen = function() {
+            console.log('WebSocket connected');
+            // Send the message
+            ws.send(JSON.stringify({ message: message }));
+        };
+        
+        ws.onmessage = function(event) {
+            try {
+                const data = JSON.parse(event.data);
+                console.log('WebSocket received:', data);
+                
+                if (data.type === 'final') {
+                    // Don't add "Final Answer:" prefix since it's already included
+                    appendStreamingContent(streamingContent, data.content);
+                    ws.close();
+                    resolve();
+                } else if (data.type === 'error') {
+                    appendStreamingContent(streamingContent, `<div class="agent-error">Error: ${data.content}</div>`);
+                    ws.close();
+                    reject(new Error(data.content));
+                } else {
+                    // Handle intermediate steps
+                    handleStreamingMessage(data, streamingContent);
+                }
+                
+                // Scroll to bottom after each message
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                
+            } catch (e) {
+                console.error('Error parsing WebSocket message:', e);
+            }
+        };
+        
+        ws.onerror = function(error) {
+            console.error('WebSocket error:', error);
+            reject(error);
+        };
+        
+        ws.onclose = function() {
+            console.log('WebSocket closed');
+        };
+        
+        // Timeout after 30 seconds
+        setTimeout(() => {
+            if (ws.readyState !== WebSocket.CLOSED) {
+                ws.close();
+                reject(new Error('WebSocket timeout'));
+            }
+        }, 30000);
+    });
+}
+
+async function sendChatMessageSSE(message) {
+    // Create a streaming message container for the assistant response
+    const streamingMessageId = 'streaming-' + Date.now();
+    const messagesContainer = document.getElementById('chat-messages');
+    
+    const streamingDiv = document.createElement('div');
+    streamingDiv.id = streamingMessageId;
+    streamingDiv.className = 'chat-message assistant';
+    
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'message-content';
+    contentDiv.innerHTML = '<strong>AI Assistant:</strong><br><span class="streaming-content"></span>';
+    
+    streamingDiv.appendChild(contentDiv);
+    messagesContainer.appendChild(streamingDiv);
+    
+    const streamingContent = streamingDiv.querySelector('.streaming-content');
+    
+    // Scroll to bottom
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    
+    try {
+        const response = await fetch('/api/chat/stream', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ message: message })
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        
+        let buffer = '';
+        let hasContent = false;
+        
+        while (true) {
+            const { done, value } = await reader.read();
+            
+            if (done) break;
+            
+            buffer += decoder.decode(value, { stream: true });
+            
+            // Process complete lines
+            const lines = buffer.split('\n');
+            buffer = lines.pop(); // Keep incomplete line in buffer
+            
+            for (const line of lines) {
+                if (line.trim() === '') continue;
+                
+                if (line.startsWith('data: ')) {
+                    try {
+                        const data = JSON.parse(line.slice(6));
+                        
+                        // Show content immediately as it comes in
+                        if (data.type !== 'heartbeat') {
+                            handleStreamingMessage(data, streamingContent);
+                            hasContent = true;
+                            
+                            // Scroll to bottom after each update
+                            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                        }
+                        
+                    } catch (e) {
+                        console.error('Error parsing SSE data:', e, 'Line:', line);
+                    }
+                }
+            }
+        }
+        
+        // If no content was streamed, show an error
+        if (!hasContent) {
+            streamingContent.innerHTML = 'No response received from AI agent.';
+        }
+        
+    } catch (error) {
+        console.error('Streaming error:', error);
+        streamingContent.innerHTML = `<div class="agent-error">Error: ${error.message}</div>`;
+    }
+}
+
+function handleStreamingMessage(data, contentElement) {
+    const { type, content } = data;
+    
+    switch (type) {
+        case 'thinking':
+            appendStreamingContent(contentElement, `<div class='agent-thinking'>${content}</div>`);
+            break;
+        case 'invoking':
+            appendStreamingContent(contentElement, `<div class='agent-invoking'>${content}</div>`);
+            break;
+        case 'responded':
+            // Skip the final "responded" message if it's the final answer
+            // The final answer will be sent as type 'final' instead
+            break;
+        case 'result':
+            appendStreamingContent(contentElement, `<div class='agent-result'>${content}</div>`);
+            break;
+        case 'final':
+            appendStreamingContent(contentElement, `<div class='agent-final'><strong>Final Answer:</strong> ${content}</div>`);
+            break;
+        case 'error':
+            appendStreamingContent(contentElement, `<div class='agent-error'>Error: ${content}</div>`);
+            break;
+        case 'heartbeat':
+            // Do nothing for heartbeat
+            break;
+        default:
+            console.log('Unknown message type:', type, content);
+    }
+}
+
+function appendStreamingContent(contentElement, htmlContent) {
+    contentElement.innerHTML += htmlContent + '<br>';
+    
+    // Scroll to bottom
+    const messagesContainer = document.getElementById('chat-messages');
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function addChatMessage(message, type) {
+    const messagesContainer = document.getElementById('chat-messages');
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `chat-message ${type}`;
+    
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'message-content';
+    
+    if (type === 'user') {
+        contentDiv.innerHTML = `<strong>You:</strong> ${escapeHtml(message)}`;
+    } else if (type === 'assistant') {
+        contentDiv.innerHTML = `<strong>AI Assistant:</strong> ${formatAssistantMessage(message)}`;
+    } else if (type === 'error') {
+        contentDiv.innerHTML = `<strong>Error:</strong> ${escapeHtml(message)}`;
+    }
+    
+    messageDiv.appendChild(contentDiv);
+    messagesContainer.appendChild(messageDiv);
+    
+    // Scroll to bottom
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function addThinkingIndicator() {
+    const messagesContainer = document.getElementById('chat-messages');
+    const thinkingDiv = document.createElement('div');
+    const thinkingId = 'thinking-' + Date.now();
+    thinkingDiv.id = thinkingId;
+    thinkingDiv.className = 'chat-message assistant';
+    
+    thinkingDiv.innerHTML = `
+        <div class="message-content">
+            <div class="thinking-indicator">
+                <strong>AI Assistant:</strong> Thinking
+                <div class="thinking-dots">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    messagesContainer.appendChild(thinkingDiv);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    
+    return thinkingId;
+}
+
+function removeThinkingIndicator(thinkingId) {
+    const thinkingDiv = document.getElementById(thinkingId);
+    if (thinkingDiv) {
+        thinkingDiv.remove();
+    }
+}
+
+function formatAssistantMessage(message) {
+    console.log('Formatting message:', message.substring(0, 200) + '...');
+    
+    // Check if the message contains agent intermediate steps (HTML divs with single quotes)
+    if (message.includes("<div class='agent-thinking'>") || 
+        message.includes("<div class='agent-invoking'>") || 
+        message.includes("<div class='agent-responded'>") || 
+        message.includes("<div class='agent-step'>") || 
+        message.includes("<div class='agent-result'>") || 
+        message.includes("<div class='agent-final'>")) {
+        
+        console.log('Message contains HTML divs - rendering as HTML');
+        // Message contains intermediate steps HTML - return as-is but convert newlines
+        return message.replace(/\n\n/g, '<br><br>').replace(/\n/g, '<br>');
+    }
+    
+    console.log('Message does not contain HTML divs - escaping HTML');
+    // Basic formatting for regular AI responses
+    let formatted = escapeHtml(message);
+    
+    // Convert newlines to <br>
+    formatted = formatted.replace(/\n/g, '<br>');
+    
+    // Format code blocks (basic)
+    formatted = formatted.replace(/`([^`]+)`/g, '<code style="background: rgba(0,255,136,0.1); padding: 2px 4px; border-radius: 3px;">$1</code>');
+    
+    return formatted;
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }
 
 // Logs Management

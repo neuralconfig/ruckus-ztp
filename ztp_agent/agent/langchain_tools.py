@@ -1,10 +1,11 @@
 """
-Tools for the ZTP AI agent.
+LangChain tools for the ZTP AI agent.
 """
 import logging
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Type
 
-from smolagents import tool, Tool
+from langchain.tools import BaseTool
+from pydantic import BaseModel, Field
 
 from ztp_agent.network.switch import (
     SwitchOperation,
@@ -16,40 +17,60 @@ from ztp_agent.network.switch import (
 logger = logging.getLogger(__name__)
 
 
-class GetPortStatusTool(Tool):
+# Input schemas for tools with parameters
+class PortStatusInput(BaseModel):
+    switch_ip: str = Field(description="IP address of the switch")
+    port: str = Field(description="Port name (e.g., '1/1/1')")
+
+
+class ChangePortVlanInput(BaseModel):
+    switch_ip: str = Field(description="IP address of the switch")
+    port: str = Field(description="Port name (e.g., '1/1/1')")
+    vlan_id: int = Field(description="New VLAN ID")
+
+
+class SetPortStatusInput(BaseModel):
+    switch_ip: str = Field(description="IP address of the switch")
+    port: str = Field(description="Port name (e.g., '1/1/1')")
+    status: str = Field(description="New status ('enable' or 'disable')")
+
+
+class SetPoEStatusInput(BaseModel):
+    switch_ip: str = Field(description="IP address of the switch")
+    port: str = Field(description="Port name (e.g., '1/1/1')")
+    status: str = Field(description="New status ('enabled' or 'disabled')")
+
+
+class GetLLDPNeighborsInput(BaseModel):
+    switch_ip: str = Field(description="IP address of the switch")
+
+
+class RunShowCommandInput(BaseModel):
+    switch_ip: str = Field(description="IP address of the switch")
+    command: str = Field(description="Show command to run (e.g., 'show version', 'show interfaces brief')")
+
+
+class GetSwitchDetailsInput(BaseModel):
+    switch_ip: str = Field(description="IP address of the switch")
+
+
+# Tools with no parameters (empty input schemas)
+class NoInput(BaseModel):
+    pass
+
+
+class GetPortStatusTool(BaseTool):
     """Tool to get status of a port on a RUCKUS ICX switch."""
-    name = "get_port_status"
-    description = "Get status of a port on a switch"
-    inputs = {
-        "switch_ip": {
-            "type": "string",
-            "description": "IP address of the switch"
-        },
-        "port": {
-            "type": "string",
-            "description": "Port name (e.g., '1/1/1')"
-        }
-    }
-    output_type = "object"
+    name: str = "get_port_status"
+    description: str = "Get status of a port on a switch including VLAN and PoE information"
+    args_schema: Type[BaseModel] = PortStatusInput
+    switches: Dict[str, SwitchOperation] = {}
 
     def __init__(self, switches: Dict[str, SwitchOperation]):
-        super().__init__()
-        self.switches = switches
+        super().__init__(switches=switches)
 
-    def forward(self, switch_ip: str, port: str) -> Dict[str, Any]:
-        """
-        Get status of a port.
-        
-        Args:
-            switch_ip: IP address of the switch.
-            port: Port name.
-            
-        Returns:
-            Dictionary of port status information.
-            
-        Raises:
-            ValueError: If switch not found.
-        """
+    def _run(self, switch_ip: str, port: str) -> Dict[str, Any]:
+        """Execute the tool."""
         if switch_ip not in self.switches:
             raise ValueError(f"Switch '{switch_ip}' not found")
         
@@ -68,45 +89,18 @@ class GetPortStatusTool(Tool):
             }
 
 
-class ChangePortVlanTool(Tool):
+class ChangePortVlanTool(BaseTool):
     """Tool to change VLAN assignment of a port on a RUCKUS ICX switch."""
-    name = "change_port_vlan"
-    description = "Change VLAN of a port on a switch"
-    inputs = {
-        "switch_ip": {
-            "type": "string",
-            "description": "IP address of the switch"
-        },
-        "port": {
-            "type": "string",
-            "description": "Port name (e.g., '1/1/1')"
-        },
-        "vlan_id": {
-            "type": "integer",
-            "description": "New VLAN ID"
-        }
-    }
-    output_type = "boolean"
+    name: str = "change_port_vlan"
+    description: str = "Change VLAN assignment of a port on a switch"
+    args_schema: Type[BaseModel] = ChangePortVlanInput
 
     def __init__(self, switches: Dict[str, SwitchOperation]):
         super().__init__()
         self.switches = switches
 
-    def forward(self, switch_ip: str, port: str, vlan_id: int) -> bool:
-        """
-        Change VLAN of a port.
-        
-        Args:
-            switch_ip: IP address of the switch.
-            port: Port name.
-            vlan_id: New VLAN ID.
-            
-        Returns:
-            True if successful, False otherwise.
-            
-        Raises:
-            ValueError: If switch not found.
-        """
+    def _run(self, switch_ip: str, port: str, vlan_id: int) -> bool:
+        """Execute the tool."""
         if switch_ip not in self.switches:
             raise ValueError(f"Switch '{switch_ip}' not found")
         
@@ -117,45 +111,18 @@ class ChangePortVlanTool(Tool):
             return success
 
 
-class SetPortStatusTool(Tool):
+class SetPortStatusTool(BaseTool):
     """Tool to enable or disable a port on a RUCKUS ICX switch."""
-    name = "set_port_status"
-    description = "Set status of a port on a switch"
-    inputs = {
-        "switch_ip": {
-            "type": "string",
-            "description": "IP address of the switch"
-        },
-        "port": {
-            "type": "string",
-            "description": "Port name (e.g., '1/1/1')"
-        },
-        "status": {
-            "type": "string",
-            "description": "New status ('enable' or 'disable')"
-        }
-    }
-    output_type = "boolean"
+    name: str = "set_port_status"
+    description: str = "Enable or disable a port on a switch"
+    args_schema: Type[BaseModel] = SetPortStatusInput
 
     def __init__(self, switches: Dict[str, SwitchOperation]):
         super().__init__()
         self.switches = switches
 
-    def forward(self, switch_ip: str, port: str, status: str) -> bool:
-        """
-        Set status of a port.
-        
-        Args:
-            switch_ip: IP address of the switch.
-            port: Port name.
-            status: New status ("enable" or "disable").
-            
-        Returns:
-            True if successful, False otherwise.
-            
-        Raises:
-            ValueError: If switch not found or status invalid.
-        """
+    def _run(self, switch_ip: str, port: str, status: str) -> bool:
+        """Execute the tool."""
         if switch_ip not in self.switches:
             raise ValueError(f"Switch '{switch_ip}' not found")
         
@@ -171,45 +138,18 @@ class SetPortStatusTool(Tool):
             return success
 
 
-class SetPoEStatusTool(Tool):
+class SetPoEStatusTool(BaseTool):
     """Tool to control PoE (Power over Ethernet) on a port on a RUCKUS ICX switch."""
-    name = "set_poe_status"
-    description = "Set PoE status of a port on a switch"
-    inputs = {
-        "switch_ip": {
-            "type": "string",
-            "description": "IP address of the switch"
-        },
-        "port": {
-            "type": "string",
-            "description": "Port name (e.g., '1/1/1')"
-        },
-        "status": {
-            "type": "string",
-            "description": "New status ('enabled' or 'disabled')"
-        }
-    }
-    output_type = "boolean"
+    name: str = "set_poe_status"
+    description: str = "Control PoE power delivery on a port"
+    args_schema: Type[BaseModel] = SetPoEStatusInput
 
     def __init__(self, switches: Dict[str, SwitchOperation]):
         super().__init__()
         self.switches = switches
 
-    def forward(self, switch_ip: str, port: str, status: str) -> bool:
-        """
-        Set PoE status of a port.
-        
-        Args:
-            switch_ip: IP address of the switch.
-            port: Port name.
-            status: New status ("enabled" or "disabled").
-            
-        Returns:
-            True if successful, False otherwise.
-            
-        Raises:
-            ValueError: If switch not found or status invalid.
-        """
+    def _run(self, switch_ip: str, port: str, status: str) -> bool:
+        """Execute the tool."""
         if switch_ip not in self.switches:
             raise ValueError(f"Switch '{switch_ip}' not found")
         
@@ -227,59 +167,36 @@ class SetPoEStatusTool(Tool):
             return success
 
 
-class GetSwitchesTool(Tool):
+class GetSwitchesTool(BaseTool):
     """Tool to get list of all available switches in the network."""
-    name = "get_switches"
-    description = "Get list of available switches"
-    inputs = {}
-    output_type = "array"
+    name: str = "get_switches"
+    description: str = "Get list of all available switches in the network"
+    args_schema: Type[BaseModel] = NoInput
 
     def __init__(self, switches: Dict[str, SwitchOperation]):
         super().__init__()
         self.switches = switches
 
-    def forward(self, **kwargs) -> List[Dict[str, Any]]:
-        """
-        Get list of available switches.
-        
-        Returns:
-            List of switch information dictionaries.
-        """
+    def _run(self) -> List[Dict[str, Any]]:
+        """Execute the tool."""
         return [
             {"ip": ip}
             for ip in self.switches.keys()
         ]
 
 
-class GetLLDPNeighborsTool(Tool):
+class GetLLDPNeighborsTool(BaseTool):
     """Tool to get LLDP neighbors for network topology discovery on a RUCKUS ICX switch."""
-    name = "get_lldp_neighbors"
-    description = "Get LLDP neighbors for a switch"
-    inputs = {
-        "switch_ip": {
-            "type": "string",
-            "description": "IP address of the switch"
-        }
-    }
-    output_type = "object"
+    name: str = "get_lldp_neighbors"
+    description: str = "Get LLDP neighbors for network topology discovery"
+    args_schema: Type[BaseModel] = GetLLDPNeighborsInput
 
     def __init__(self, switches: Dict[str, SwitchOperation]):
         super().__init__()
         self.switches = switches
 
-    def forward(self, switch_ip: str) -> Dict[str, Any]:
-        """
-        Get LLDP neighbors for a switch.
-        
-        Args:
-            switch_ip: IP address of the switch.
-            
-        Returns:
-            Dictionary of port to neighbor information.
-            
-        Raises:
-            ValueError: If switch not found.
-        """
+    def _run(self, switch_ip: str) -> Dict[str, Any]:
+        """Execute the tool."""
         if switch_ip not in self.switches:
             raise ValueError(f"Switch '{switch_ip}' not found")
         
@@ -294,40 +211,18 @@ class GetLLDPNeighborsTool(Tool):
             return {"neighbors": neighbors}
 
 
-class RunShowCommandTool(Tool):
+class RunShowCommandTool(BaseTool):
     """Tool to execute diagnostic 'show' commands on a RUCKUS ICX switch."""
-    name = "run_show_command"
-    description = "Run a show command on a RUCKUS ICX FastIron switch"
-    inputs = {
-        "switch_ip": {
-            "type": "string",
-            "description": "IP address of the switch"
-        },
-        "command": {
-            "type": "string", 
-            "description": "Show command to run (e.g., 'show version', 'show interfaces brief', 'show running-config')"
-        }
-    }
-    output_type = "object"
+    name: str = "run_show_command"
+    description: str = "Execute diagnostic 'show' commands on a RUCKUS ICX switch"
+    args_schema: Type[BaseModel] = RunShowCommandInput
 
     def __init__(self, switches: Dict[str, SwitchOperation]):
         super().__init__()
         self.switches = switches
 
-    def forward(self, switch_ip: str, command: str) -> Dict[str, Any]:
-        """
-        Run a show command on a switch.
-        
-        Args:
-            switch_ip: IP address of the switch.
-            command: Show command to run.
-            
-        Returns:
-            Dictionary with command output.
-            
-        Raises:
-            ValueError: If switch not found or command fails.
-        """
+    def _run(self, switch_ip: str, command: str) -> Dict[str, Any]:
+        """Execute the tool."""
         logger.info(f"Running show command '{command}' on switch {switch_ip}")
         
         if switch_ip not in self.switches:
@@ -365,67 +260,18 @@ class RunShowCommandTool(Tool):
             }
 
 
-class GetAPInventoryTool(Tool):
-    """Tool to get inventory of discovered access points (APs)."""
-    name = "get_ap_inventory"
-    description = "Get inventory of discovered access points (APs)"
-    inputs = {}
-    output_type = "array"
-
-    def __init__(self, ztp_process):
-        super().__init__()
-        self.ztp_process = ztp_process
-
-    def forward(self, **kwargs) -> List[Dict[str, Any]]:
-        """
-        Get inventory of APs.
-        
-        Returns:
-            List of AP information dictionaries.
-        """
-        logger.info("Getting AP inventory")
-        
-        if not self.ztp_process:
-            return []
-        
-        ap_inventory = []
-        aps = self.ztp_process.inventory.get('aps', {})
-        
-        for mac, ap_data in aps.items():
-            ap_info = {
-                "mac": mac,
-                "ip": ap_data.get('ip', 'Unknown'),
-                "hostname": ap_data.get('hostname') or ap_data.get('system_name', 'Unknown'),
-                "model": ap_data.get('model') or ap_data.get('system_name', 'Unknown'),
-                "status": ap_data.get('status', 'Unknown'),
-                "connected_switch": ap_data.get('switch_ip', 'Unknown'),
-                "connected_port": ap_data.get('switch_port', 'Unknown'),
-                "configured": ap_data.get('status') == 'Configured'
-            }
-            ap_inventory.append(ap_info)
-        
-        return ap_inventory
-
-
-class GetZTPStatusTool(Tool):
+class GetZTPStatusTool(BaseTool):
     """Tool to get ZTP (Zero Touch Provisioning) process status and statistics."""
-    name = "get_ztp_status"
-    description = "Get ZTP (Zero Touch Provisioning) process status and statistics"
-    inputs = {}
-    output_type = "object"
-    skip_forward_signature_validation = True
+    name: str = "get_ztp_status"
+    description: str = "Get ZTP (Zero Touch Provisioning) process status and statistics"
+    args_schema: Type[BaseModel] = NoInput
+    ztp_process: Any = None
 
     def __init__(self, ztp_process):
-        super().__init__()
-        self.ztp_process = ztp_process
+        super().__init__(ztp_process=ztp_process)
 
-    def forward(self, *args, **kwargs) -> Dict[str, Any]:
-        """
-        Get ZTP process status and statistics.
-        
-        Returns:
-            Dictionary with ZTP status information.
-        """
+    def _run(self) -> Dict[str, Any]:
+        """Execute the tool."""
         logger.info("Getting ZTP status")
         
         if not self.ztp_process:
@@ -468,65 +314,61 @@ class GetZTPStatusTool(Tool):
         }
 
 
-def get_network_tools(
-    switches: Dict[str, SwitchOperation],
-    ztp_process = None
-) -> List[Tool]:
-    """
-    Get tools for network operations.
-    
-    Args:
-        switches: Dictionary of switch IP to SwitchOperation instance.
-        ztp_process: ZTP process instance for accessing inventory.
+class GetAPInventoryTool(BaseTool):
+    """Tool to get inventory of discovered access points (APs)."""
+    name: str = "get_ap_inventory"
+    description: str = "Get inventory of discovered access points (APs)"
+    args_schema: Type[BaseModel] = NoInput
+
+    def __init__(self, ztp_process):
+        super().__init__()
+        self.ztp_process = ztp_process
+
+    def _run(self) -> List[Dict[str, Any]]:
+        """Execute the tool."""
+        logger.info("Getting AP inventory")
         
-    Returns:
-        List of network tools.
-    """
-    tools = [
-        GetSwitchesTool(switches),
-        GetSwitchDetailsTool(switches),
-        GetNetworkSummaryTool(switches, ztp_process),
-        GetPortStatusTool(switches),
-        ChangePortVlanTool(switches),
-        SetPortStatusTool(switches),
-        SetPoEStatusTool(switches),
-        GetLLDPNeighborsTool(switches),
-        RunShowCommandTool(switches)
-    ]
-    
-    if ztp_process:
-        tools.append(GetAPInventoryTool(ztp_process))
-        tools.append(GetZTPStatusTool(ztp_process))
-    
-    return tools
+        if not self.ztp_process:
+            return []
+        
+        ap_inventory = []
+        aps = self.ztp_process.inventory.get('aps', {})
+        
+        for mac, ap_data in aps.items():
+            ap_info = {
+                "mac": mac,
+                "ip": ap_data.get('ip', 'Unknown'),
+                "hostname": ap_data.get('hostname') or ap_data.get('system_name', 'Unknown'),
+                "model": ap_data.get('model') or ap_data.get('system_name', 'Unknown'),
+                "status": ap_data.get('status', 'Unknown'),
+                "connected_switch": ap_data.get('switch_ip', 'Unknown'),
+                "connected_port": ap_data.get('switch_port', 'Unknown'),
+                "configured": ap_data.get('status') == 'Configured'
+            }
+            ap_inventory.append(ap_info)
+        
+        return ap_inventory
 
 
-class GetNetworkSummaryTool(Tool):
+class GetNetworkSummaryTool(BaseTool):
     """Tool to get comprehensive network summary including switches, APs, ZTP status, and topology overview."""
-    name = "get_network_summary"
-    description = "Get comprehensive network summary including switches, APs, ZTP status, and topology overview"
-    inputs = {}
-    output_type = "object"
+    name: str = "get_network_summary"
+    description: str = "Get comprehensive network summary including switches, APs, ZTP status, and topology overview"
+    args_schema: Type[BaseModel] = NoInput
 
     def __init__(self, switches: Dict[str, SwitchOperation], ztp_process=None):
         super().__init__()
         self.switches = switches
         self.ztp_process = ztp_process
 
-    def forward(self, **kwargs) -> Dict[str, Any]:
-        """
-        Get comprehensive network summary.
-        
-        Returns:
-            Dictionary with complete network overview.
-        """
+    def _run(self) -> Dict[str, Any]:
+        """Execute the tool."""
         logger.info("Getting comprehensive network summary")
         
         summary = {
             "switches": [],
             "access_points": [],
             "ztp_status": {},
-            "network_topology": {},
             "summary_stats": {}
         }
         
@@ -595,35 +437,18 @@ class GetNetworkSummaryTool(Tool):
         return summary
 
 
-class GetSwitchDetailsTool(Tool):
+class GetSwitchDetailsTool(BaseTool):
     """Tool to get detailed information about a specific switch including hostname, model, version, and port count."""
-    name = "get_switch_details"
-    description = "Get detailed information about a specific switch including hostname, model, version, and port count"
-    inputs = {
-        "switch_ip": {
-            "type": "string",
-            "description": "IP address of the switch"
-        }
-    }
-    output_type = "object"
+    name: str = "get_switch_details"
+    description: str = "Get detailed information about a specific switch including hostname, model, version, and port count"
+    args_schema: Type[BaseModel] = GetSwitchDetailsInput
 
     def __init__(self, switches: Dict[str, SwitchOperation]):
         super().__init__()
         self.switches = switches
 
-    def forward(self, switch_ip: str) -> Dict[str, Any]:
-        """
-        Get detailed information about a specific switch.
-        
-        Args:
-            switch_ip: IP address of the switch.
-            
-        Returns:
-            Dictionary with detailed switch information.
-            
-        Raises:
-            ValueError: If switch not found.
-        """
+    def _run(self, switch_ip: str) -> Dict[str, Any]:
+        """Execute the tool."""
         logger.info(f"Getting detailed information for switch {switch_ip}")
         
         if switch_ip not in self.switches:
@@ -697,3 +522,36 @@ class GetSwitchDetailsTool(Tool):
             details["error"] = str(e)
         
         return details
+
+
+def get_network_tools(
+    switches: Dict[str, SwitchOperation],
+    ztp_process = None
+) -> List[BaseTool]:
+    """
+    Get LangChain tools for network operations.
+    
+    Args:
+        switches: Dictionary of switch IP to SwitchOperation instance.
+        ztp_process: ZTP process instance for accessing inventory.
+        
+    Returns:
+        List of LangChain network tools.
+    """
+    tools = [
+        GetSwitchesTool(switches),
+        GetSwitchDetailsTool(switches),
+        GetNetworkSummaryTool(switches, ztp_process),
+        GetPortStatusTool(switches),
+        ChangePortVlanTool(switches),
+        SetPortStatusTool(switches),
+        SetPoEStatusTool(switches),
+        GetLLDPNeighborsTool(switches),
+        RunShowCommandTool(switches)
+    ]
+    
+    if ztp_process:
+        tools.append(GetAPInventoryTool(ztp_process))
+        tools.append(GetZTPStatusTool(ztp_process))
+    
+    return tools

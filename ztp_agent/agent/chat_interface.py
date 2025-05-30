@@ -21,7 +21,8 @@ class ChatInterface:
         self,
         openrouter_api_key: str,
         model: str,
-        switches: Dict[str, Any]
+        switches: Dict[str, Any],
+        ztp_process = None
     ):
         """
         Initialize the chat interface.
@@ -30,10 +31,12 @@ class ChatInterface:
             openrouter_api_key: OpenRouter API key.
             model: OpenRouter model to use.
             switches: Dictionary of switch information.
+            ztp_process: ZTP process instance for accessing inventory.
         """
         self.openrouter_api_key = openrouter_api_key
         self.model = model
         self.switches = switches
+        self.ztp_process = ztp_process
         
         # Set up the AI agent
         self.agent = self._create_agent()
@@ -51,19 +54,55 @@ class ChatInterface:
         switch_operations = self._prepare_switch_operations()
         
         # Get tools for the agent
-        tools = get_network_tools(switch_operations)
+        tools = get_network_tools(switch_operations, self.ztp_process)
         
         # Set up the system message for the agent
         system_message = """
-        You are a network assistant that helps configure and manage RUCKUS network devices.
+        You are a network assistant specialized in RUCKUS ICX FastIron switches and Zero-Touch Provisioning (ZTP).
+        You help configure and manage network devices in a ZTP environment.
         
-        You can perform the following tasks:
-        1. Change VLAN on a port
-        2. Enable or disable a port
-        3. Enable or disable PoE on a port
+        TOOL SELECTION GUIDELINES:
+        - For ZTP-related questions ("is ZTP running?", "ZTP status", "ZTP process"): Use get_ztp_status FIRST
+        - For access point questions ("AP status", "access points"): Use get_ap_inventory  
+        - For switch discovery ("list switches", "available switches"): Use get_switches first
+        - For port operations: Always get_port_status before making changes
+        - For network topology: Use get_lldp_neighbors
+        - For detailed diagnostics: Use run_show_command with appropriate ICX commands
+        - For general network overview: Use get_network_summary
         
-        When given a request, analyze it to determine the appropriate action.
-        Provide clear, concise responses explaining what configuration changes you've made.
+        CRITICAL: When user asks about "ZTP" or "Zero Touch Provisioning", always use get_ztp_status NOT get_switches!
+        
+        AVAILABLE TOOLS BY CATEGORY:
+        
+        🔍 DISCOVERY & STATUS:
+        - get_switches: List all managed switches (use this first for switch operations)
+        - get_ztp_status: ZTP process status, statistics, configuration details
+        - get_ap_inventory: Access point inventory and connection details
+        - get_lldp_neighbors: Network topology and neighbor discovery
+        
+        🔧 PORT MANAGEMENT:
+        - get_port_status: Check port status, VLAN, PoE (use before changes)
+        - change_port_vlan: Modify port VLAN assignment
+        - set_port_status: Enable/disable ports
+        - set_poe_status: Control PoE power delivery
+        
+        📋 DIAGNOSTICS:
+        - run_show_command: Execute ICX CLI commands (show version, show interfaces brief, 
+          show running-config, show vlan, show mac-address, show spanning-tree, etc.)
+        
+        OPERATION WORKFLOW:
+        1. For switch operations: Start with get_switches to see available devices
+        2. For port changes: Check current status with get_port_status first
+        3. For troubleshooting: Use get_lldp_neighbors and run_show_command
+        4. For ZTP questions: Use get_ztp_status (not get_ap_inventory)
+        
+        RUCKUS ICX CONTEXT:
+        - Ports are named as x/y/z format (e.g., 1/1/7, 1/1/8)
+        - VLANs range from 1-4094
+        - PoE available on supported ports
+        
+        Always provide clear explanations of what you found and any changes made.
+        Verify results when possible and suggest next steps for complex operations.
         """
         
         # Create prompt templates
@@ -109,19 +148,52 @@ class ChatInterface:
     def _prepare_switch_operations(self) -> Dict[str, SwitchOperation]:
         """
         Convert switch dictionary to SwitchOperation instances.
+        Gets the latest switch data from ZTP process if available.
         
         Returns:
-            Dictionary of switch name to SwitchOperation instance.
+            Dictionary of switch IP to SwitchOperation instance.
         """
         switch_operations = {}
-        for ip, switch_info in self.switches.items():
-            # Create a SwitchOperation instance for each switch
-            switch_operations[ip] = SwitchOperation(
-                ip=ip,
-                username=switch_info.get('username'),
-                password=switch_info.get('password'),
-                preferred_password=switch_info.get('preferred_password', switch_info.get('password'))
-            )
+        
+        # Use ZTP process inventory if available (preferred source)
+        if self.ztp_process:
+            try:
+                # ZTP process stores switches keyed by MAC address
+                ztp_switches = getattr(self.ztp_process, 'inventory', {}).get('switches', {})
+                logger.info(f"Found {len(ztp_switches)} switches in ZTP inventory")
+                
+                for mac, switch_info in ztp_switches.items():
+                    ip = switch_info.get('ip')
+                    if not ip:
+                        logger.warning(f"Switch {mac} has no IP address in ZTP inventory")
+                        continue
+                        
+                    # Create a SwitchOperation instance for each switch
+                    switch_operations[ip] = SwitchOperation(
+                        ip=ip,
+                        username=switch_info.get('username'),
+                        password=switch_info.get('password'),
+                        preferred_password=switch_info.get('preferred_password')
+                    )
+                    logger.debug(f"Added switch {ip} from ZTP inventory")
+            except Exception as e:
+                logger.error(f"Error accessing ZTP inventory: {e}")
+                # Fall back to CLI switches
+        
+        # If no switches from ZTP, fallback to CLI switches (keyed by IP address)
+        if not switch_operations and self.switches:
+            logger.info(f"Falling back to CLI switches, found {len(self.switches)} switches")
+            for ip, switch_info in self.switches.items():
+                # Create a SwitchOperation instance for each switch
+                switch_operations[ip] = SwitchOperation(
+                    ip=ip,
+                    username=switch_info.get('username'),
+                    password=switch_info.get('password'),
+                    preferred_password=switch_info.get('preferred_password', switch_info.get('password'))
+                )
+                logger.debug(f"Added switch {ip} from CLI switches")
+        
+        logger.info(f"Prepared {len(switch_operations)} switch operations for AI agent")
         
         return switch_operations
     
