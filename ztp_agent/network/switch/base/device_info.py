@@ -168,3 +168,55 @@ class DeviceInfo:
         
         logger.warning(f"Could not detect uptime for switch {self.ip}")
         return None
+    
+    def get_hostname(self) -> Optional[str]:
+        """
+        Get switch hostname from running configuration or prompt.
+        
+        Returns:
+            Hostname string or None if not found.
+        """
+        if hasattr(self, 'hostname') and self.hostname:
+            return self.hostname
+            
+        # First try to get hostname from running config
+        success, output = self.run_command("show running-config | include hostname")
+        
+        if success and output.strip():
+            # Parse hostname from output
+            # Example: "hostname ICX8200-C08PF-POE-FNS4352T0D4"
+            hostname_match = re.search(r'hostname\s+(\S+)', output, re.IGNORECASE)
+            if hostname_match:
+                self.hostname = hostname_match.group(1)
+                logger.debug(f"Detected hostname {self.hostname} from config for switch {self.ip}")
+                return self.hostname
+        
+        # If no hostname in config, try to extract from prompt
+        # The prompt format is typically: SSH@HOSTNAME# or similar
+        # First, try to get the prompt directly from the connection
+        if hasattr(self, 'connection') and hasattr(self.connection, 'prompt'):
+            prompt = self.connection.prompt
+            if prompt:
+                # Extract hostname from prompt like "SSH@ICX8200-C08PF-POE-FNS4352T0D4#"
+                prompt_match = re.search(r'[@]([^#\$>\s]+)[#\$>]', prompt)
+                if prompt_match:
+                    self.hostname = prompt_match.group(1)
+                    logger.debug(f"Detected hostname {self.hostname} from current prompt for switch {self.ip}")
+                    return self.hostname
+        
+        # Fallback: run a simple command to see the prompt
+        success, output = self.run_command("")  # Empty command just to see prompt
+        if success:
+            # The output might contain the prompt
+            lines = output.strip().split('\n')
+            if lines:
+                last_line = lines[-1]
+                # Look for hostname pattern in the last line
+                prompt_match = re.search(r'[@]([^#\$>\s]+)[#\$>]', last_line)
+                if prompt_match:
+                    self.hostname = prompt_match.group(1)
+                    logger.debug(f"Detected hostname {self.hostname} from command output for switch {self.ip}")
+                    return self.hostname
+        
+        logger.debug(f"No hostname found for switch {self.ip}")
+        return None
