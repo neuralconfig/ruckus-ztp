@@ -975,9 +975,26 @@ async function sendChatMessageWebSocket(message) {
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
     
     return new Promise((resolve, reject) => {
+        let isResolved = false; // Flag to prevent multiple resolve/reject calls
+        
         // Create WebSocket connection
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const ws = new WebSocket(`${protocol}//${window.location.host}/ws/chat`);
+        
+        // Helper function to safely resolve/reject
+        const safeResolve = () => {
+            if (!isResolved) {
+                isResolved = true;
+                resolve();
+            }
+        };
+        
+        const safeReject = (error) => {
+            if (!isResolved) {
+                isResolved = true;
+                reject(error);
+            }
+        };
         
         ws.onopen = function() {
             console.log('WebSocket connected');
@@ -988,17 +1005,21 @@ async function sendChatMessageWebSocket(message) {
         ws.onmessage = function(event) {
             try {
                 const data = JSON.parse(event.data);
-                console.log('WebSocket received:', data);
+                console.log('WebSocket received:', data.type, data.content ? data.content.substring(0, 100) + '...' : '');
                 
                 if (data.type === 'final') {
-                    // Don't add "Final Answer:" prefix since it's already included
-                    appendStreamingContent(streamingContent, data.content);
-                    ws.close();
-                    resolve();
+                    console.log('Received final answer, length:', data.content?.length);
+                    handleStreamingMessage(data, streamingContent);
+                    ws.close(1000, 'Normal closure'); // Close with normal code
+                    safeResolve();
                 } else if (data.type === 'error') {
+                    console.error('Received error:', data.content);
                     appendStreamingContent(streamingContent, `<div class="agent-error">Error: ${data.content}</div>`);
-                    ws.close();
-                    reject(new Error(data.content));
+                    ws.close(1000, 'Error received');
+                    safeReject(new Error(data.content));
+                } else if (data.type === 'heartbeat') {
+                    console.debug('Received heartbeat:', data.content);
+                    // Do nothing for heartbeat - just keep connection alive
                 } else {
                     // Handle intermediate steps
                     handleStreamingMessage(data, streamingContent);
@@ -1009,25 +1030,35 @@ async function sendChatMessageWebSocket(message) {
                 
             } catch (e) {
                 console.error('Error parsing WebSocket message:', e);
+                safeReject(new Error('Failed to parse WebSocket message'));
             }
         };
         
         ws.onerror = function(error) {
             console.error('WebSocket error:', error);
-            reject(error);
+            safeReject(new Error('WebSocket connection error'));
         };
         
-        ws.onclose = function() {
-            console.log('WebSocket closed');
-        };
-        
-        // Timeout after 30 seconds
-        setTimeout(() => {
-            if (ws.readyState !== WebSocket.CLOSED) {
-                ws.close();
-                reject(new Error('WebSocket timeout'));
+        ws.onclose = function(event) {
+            console.log('WebSocket closed - code:', event.code, 'reason:', event.reason, 'wasClean:', event.wasClean);
+            
+            // If WebSocket closes unexpectedly without receiving 'final', reject the promise
+            if (!isResolved && event.code !== 1000) {
+                console.error('WebSocket closed unexpectedly - code:', event.code, 'reason:', event.reason);
+                appendStreamingContent(streamingContent, `<div class="agent-error">Connection lost (code ${event.code}). Please try again.</div>`);
+                safeReject(new Error(`WebSocket closed unexpectedly: ${event.code} ${event.reason}`));
             }
-        }, 30000);
+        };
+        
+        // Timeout after 45 seconds (increased from 30 to give more time)
+        setTimeout(() => {
+            if (!isResolved && ws.readyState !== WebSocket.CLOSED) {
+                console.warn('WebSocket timeout after 45 seconds');
+                ws.close(1000, 'Timeout');
+                appendStreamingContent(streamingContent, `<div class="agent-error">Request timed out. Please try again.</div>`);
+                safeReject(new Error('WebSocket timeout'));
+            }
+        }, 45000);
     });
 }
 
@@ -1134,7 +1165,9 @@ function handleStreamingMessage(data, contentElement) {
             appendStreamingContent(contentElement, `<div class='agent-result'>${content}</div>`);
             break;
         case 'final':
-            appendStreamingContent(contentElement, `<div class='agent-final'><strong>Final Answer:</strong> ${content}</div>`);
+            // Style the final answer distinctively with proper formatting
+            const finalContent = content.replace(/\n/g, '<br>'); // Preserve line breaks
+            appendStreamingContent(contentElement, `<div class='agent-final'><strong>Final Answer:</strong><br>${finalContent}</div>`);
             break;
         case 'error':
             appendStreamingContent(contentElement, `<div class='agent-error'>Error: ${content}</div>`);
@@ -1417,6 +1450,60 @@ style.textContent = `
     @keyframes blink {
         0%, 100% { opacity: 1; }
         50% { opacity: 0.3; }
+    }
+    
+    .agent-final {
+        background: linear-gradient(135deg, rgba(0, 255, 136, 0.1), rgba(0, 255, 136, 0.05));
+        border: 1px solid var(--accent);
+        border-radius: 8px;
+        padding: 16px;
+        margin: 12px 0;
+        color: #ffffff;
+        font-family: 'Courier New', monospace;
+        line-height: 1.6;
+    }
+    
+    .agent-final strong {
+        color: var(--accent);
+        font-size: 16px;
+        display: block;
+        margin-bottom: 8px;
+        border-bottom: 1px solid rgba(0, 255, 136, 0.3);
+        padding-bottom: 4px;
+    }
+    
+    .agent-thinking {
+        color: #999;
+        font-style: italic;
+        padding: 4px 8px;
+        margin: 2px 0;
+        border-left: 2px solid #666;
+        background: rgba(255, 255, 255, 0.05);
+    }
+    
+    .agent-invoking {
+        color: var(--accent);
+        font-family: 'Courier New', monospace;
+        padding: 4px 8px;
+        margin: 4px 0;
+        background: rgba(0, 255, 136, 0.1);
+        border-radius: 4px;
+    }
+    
+    .agent-result {
+        color: #00ff88;
+        padding: 4px 8px;
+        margin: 2px 0;
+        font-size: 14px;
+    }
+    
+    .agent-error {
+        color: var(--error);
+        background: rgba(255, 69, 58, 0.1);
+        border: 1px solid var(--error);
+        border-radius: 4px;
+        padding: 8px 12px;
+        margin: 8px 0;
     }
 `;
 document.head.appendChild(style);
