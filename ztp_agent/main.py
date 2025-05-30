@@ -99,7 +99,8 @@ class EnhancedZTPAgentCLI(ZTPAgentCLI):
             self.chat_interface = ChatInterface(
                 openrouter_api_key=config['agent']['openrouter_api_key'],
                 model=config['agent']['model'],
-                switches=self.switches
+                switches=self.switches,
+                ztp_process=self.ztp_process
             )
         else:
             self.chat_interface = None
