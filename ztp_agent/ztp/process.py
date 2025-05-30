@@ -180,11 +180,15 @@ class ZTPProcess:
                     logger.error(f"Failed to connect to switch {ip}")
                 return False
             
-            # Get model, serial, and MAC address by calling the methods
+            # Get model, serial, MAC address, and hostname by calling the methods
             model = switch_op.get_model()
             serial = switch_op.get_serial()
             mac = switch_op.get_chassis_mac()
-            hostname = switch_op.hostname
+            hostname = switch_op.get_hostname()
+            
+            # If no hostname found during initial discovery, it will be generated during configuration
+            if not hostname:
+                logger.debug(f"No hostname found for {ip}, will be generated during configuration")
             
             # Check if we got a MAC address
             if not mac:
@@ -640,7 +644,12 @@ class ZTPProcess:
                     if serial:
                         switch['serial'] = serial
                         
-                hostname = switch.get('hostname') or f"{model}-{serial}"
+                # Generate hostname - ignore if it's a placeholder or empty
+                current_hostname = switch.get('hostname', '')
+                if current_hostname and current_hostname not in ['hostname', 'unknown', ''] and current_hostname != model:
+                    hostname = current_hostname
+                else:
+                    hostname = f"{model}-{serial}"
                 
                 # Get the management VLAN for basic configuration
                 mgmt_vlan = self.mgmt_vlan
@@ -707,6 +716,9 @@ class ZTPProcess:
                     # Mark as configured
                     self.inventory['switches'][mac]['configured'] = True
                     self.inventory['switches'][mac]['status'] = 'Configured'
+                    # Update the hostname in inventory to match what was set on the switch
+                    self.inventory['switches'][mac]['hostname'] = hostname
+                    logger.info(f"Updated inventory hostname for switch {ip} to {hostname}")
                 else:
                     logger.error(f"Failed to configure switch {ip} with basic settings")
             

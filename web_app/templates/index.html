@@ -18,6 +18,7 @@
             <button class="tab-btn active" data-tab="config">Configuration</button>
             <button class="tab-btn" data-tab="monitoring">Monitoring</button>
             <button class="tab-btn" data-tab="topology">Topology</button>
+            <button class="tab-btn" data-tab="chat">AI Agent</button>
             <button class="tab-btn" data-tab="logs">Logs</button>
         </nav>
 
@@ -34,7 +35,7 @@
                 <button class="btn" onclick="addCredential()">+ Add Credential</button>
                 
                 <div class="form-group">
-                    <label for="preferred-password">Preferred Password (for first-time login):</label>
+                    <label for="preferred-password">New super password (for first-time login):</label>
                     <input type="text" id="preferred-password" placeholder="Password to set on new switches">
                 </div>
             </div>
@@ -83,6 +84,12 @@
                         <option value="anthropic/claude-3-5-sonnet">Claude 3.5 Sonnet</option>
                         <option value="openai/gpt-4">GPT-4</option>
                         <option value="openai/gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                        <optgroup label="Free Models">
+                            <option value="mistralai/devstral-small:free">Mistral Devstral Small (Free)</option>
+                            <option value="meta-llama/llama-4-maverick:free">Llama 4 Maverick (Free)</option>
+                            <option value="mistralai/mistral-small-3.1-24b-instruct:free">Mistral Small 3.1 24B (Free)</option>
+                            <option value="meta-llama/llama-4-scout:free">Llama 4 Scout (Free)</option>
+                        </optgroup>
                     </select>
                 </div>
             </div>
@@ -176,9 +183,68 @@
             <div class="topology-controls">
                 <button class="btn" onclick="refreshTopology()">Refresh Topology</button>
                 <button class="btn" onclick="exportTopology()">Export Diagram</button>
+                <label class="toggle-control">
+                    <input type="checkbox" id="auto-refresh-toggle" checked onchange="toggleAutoRefresh()">
+                    Auto-refresh (10s)
+                </label>
             </div>
             <div class="topology-container">
                 <svg id="topology-svg"></svg>
+            </div>
+        </div>
+
+        <!-- AI Agent Tab -->
+        <div id="chat" class="tab-content">
+            <div class="chat-container">
+                <div class="chat-header">
+                    <h2>AI Assistant for Network Operations</h2>
+                    <p>Ask questions about your network or request configuration changes using natural language.</p>
+                </div>
+                
+                <div class="chat-messages" id="chat-messages">
+                    <div class="chat-message assistant">
+                        <div class="message-content">
+                            <strong>AI Assistant:</strong> Hello! I'm your AI assistant for network operations. I have access to the following tools to help manage your network:
+                            <br><br>
+                            <strong>🔍 Discovery & Status Tools:</strong>
+                            <ul>
+                                <li><code>get_network_summary</code> - Comprehensive network overview (switches, APs, ZTP status)</li>
+                                <li><code>get_switches</code> - List all available switches in the network</li>
+                                <li><code>get_switch_details</code> - Detailed info for a specific switch (hostname, model, ports)</li>
+                                <li><code>get_ztp_status</code> - Check ZTP process status and statistics</li>
+                                <li><code>get_ap_inventory</code> - View all discovered access points</li>
+                                <li><code>get_lldp_neighbors</code> - Show LLDP neighbors for a switch</li>
+                            </ul>
+                            <strong>🔧 Port Management Tools:</strong>
+                            <ul>
+                                <li><code>get_port_status</code> - Check port status, VLAN, and PoE state</li>
+                                <li><code>change_port_vlan</code> - Assign a port to a different VLAN</li>
+                                <li><code>set_port_status</code> - Enable or disable a port</li>
+                                <li><code>set_poe_status</code> - Control PoE power on a port</li>
+                            </ul>
+                            <strong>📋 Diagnostic Tools:</strong>
+                            <ul>
+                                <li><code>run_show_command</code> - Execute any 'show' command on a switch</li>
+                            </ul>
+                            <br>
+                            <strong>Example requests:</strong>
+                            <ul style="color: #88ff88;">
+                                <li>"Show me all switches in the network"</li>
+                                <li>"What's the status of port 1/1/7 on switch 192.168.1.100?"</li>
+                                <li>"Change port 1/1/5 to VLAN 30 on the main switch"</li>
+                                <li>"Is the ZTP process running?"</li>
+                                <li>"Show me the running config for switch 192.168.1.100"</li>
+                            </ul>
+                            <br>
+                            What would you like to know or configure?
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="chat-input-container">
+                    <input type="text" id="chat-input" placeholder="Ask me anything about your network..." onkeypress="handleChatKeyPress(event)">
+                    <button class="btn primary" onclick="sendChatMessage()">Send</button>
+                </div>
             </div>
         </div>
 
@@ -228,6 +294,10 @@
             </div>
         </div>
     </div>
+
+    <footer class="footer">
+        <p>Powered by <a href="https://neuralconfig.com" target="_blank" rel="noopener noreferrer">neural[config]</a></p>
+    </footer>
 
     <script src="/static/js/app.js"></script>
 </body>

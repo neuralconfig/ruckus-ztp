@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, Request, File, UploadFile, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request, File, UploadFile, BackgroundTasks, WebSocket
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, validator
 import uvicorn
 
@@ -49,15 +49,23 @@ class ZTPConfig(BaseModel):
 
 class ZTPStatus(BaseModel):
     running: bool
+    starting: bool = False
     switches_discovered: int
     switches_configured: int
     aps_discovered: int
     last_poll: Optional[str] = None
     errors: List[str] = []
 
+class ChatMessage(BaseModel):
+    message: str
+
+class ChatResponse(BaseModel):
+    response: str
+
 class DeviceInfo(BaseModel):
     ip: str
     mac: Optional[str] = None
+    hostname: Optional[str] = None
     model: Optional[str] = None
     serial: Optional[str] = None
     status: str  # discovered, configured, error
@@ -79,6 +87,7 @@ ztp_process: Optional[ZTPProcess] = None
 app_config: Dict[str, Any] = {}
 base_configs: Dict[str, str] = {}
 status_log: List[Dict[str, Any]] = []
+ztp_starting: bool = False  # Track if ZTP is being started
 
 # Static files and templates
 web_app_dir = Path(__file__).parent
@@ -147,19 +156,19 @@ async def startup_event():
     # Setup basic logging for web app
     import logging
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         force=True  # Override any existing logging configuration
     )
     
     # Add custom handler to capture ZTP logs
     web_handler = WebLogHandler()
-    web_handler.setLevel(logging.INFO)
+    web_handler.setLevel(logging.DEBUG)
     
     # Add to relevant loggers
     ztp_logger = logging.getLogger('ztp_agent')
     ztp_logger.addHandler(web_handler)
-    ztp_logger.setLevel(logging.INFO)
+    ztp_logger.setLevel(logging.DEBUG)
     
     load_base_configs()
     log_status("Web application started")
@@ -224,11 +233,12 @@ async def upload_base_config(name: str, file: UploadFile = File(...)) -> Dict[st
 @app.get("/api/status")
 async def get_status() -> ZTPStatus:
     """Get ZTP process status."""
-    global ztp_process
+    global ztp_process, ztp_starting
     
     if not ztp_process:
         return ZTPStatus(
             running=False,
+            starting=ztp_starting,
             switches_discovered=0,
             switches_configured=0,
             aps_discovered=0
@@ -246,6 +256,7 @@ async def get_status() -> ZTPStatus:
     
     return ZTPStatus(
         running=ztp_process.running,
+        starting=ztp_starting and not ztp_process.running,  # Only starting if not yet running
         switches_discovered=switches_discovered,
         switches_configured=switches_configured,
         aps_discovered=aps_discovered,
@@ -296,6 +307,7 @@ async def get_devices() -> List[DeviceInfo]:
         devices.append(DeviceInfo(
             ip=switch_data.get('ip', 'Unknown'),
             mac=mac,
+            hostname=switch_data.get('hostname'),
             model=switch_data.get('model'),
             serial=switch_data.get('serial'),
             status=status,
@@ -324,6 +336,7 @@ async def get_devices() -> List[DeviceInfo]:
         devices.append(DeviceInfo(
             ip=ap_data.get('ip', 'Unknown'),
             mac=mac,
+            hostname=ap_data.get('hostname') or ap_data.get('system_name'),
             model=ap_data.get('model') or ap_data.get('system_name'),
             serial=ap_data.get('serial', mac),
             status=ap_status,
@@ -343,13 +356,19 @@ async def get_devices() -> List[DeviceInfo]:
 @app.post("/api/ztp/start")
 async def start_ztp(background_tasks: BackgroundTasks) -> Dict[str, Any]:
     """Start the ZTP process."""
-    global ztp_process, app_config
+    global ztp_process, app_config, ztp_starting
     
     if not app_config:
         raise HTTPException(status_code=400, detail="Configuration not set")
     
     if ztp_process and ztp_process.running:
         return {"message": "ZTP process is already running", "errors": []}
+    
+    if ztp_starting:
+        return {"message": "ZTP process is starting", "errors": []}
+    
+    # Set starting flag
+    ztp_starting = True
     
     try:
         # Convert app config to ZTP config format
@@ -427,6 +446,8 @@ async def start_ztp(background_tasks: BackgroundTasks) -> Dict[str, Any]:
         # Start the process if we have at least one successful connection
         background_tasks.add_task(run_ztp_process)
         
+        # Don't clear starting flag here - let run_ztp_process clear it after actually starting
+        
         if connection_errors:
             message = f"ZTP process started with {successful_switches} seed switch(es), but {len(connection_errors)} failed to connect"
             log_status(message, "warning")
@@ -445,6 +466,8 @@ async def start_ztp(background_tasks: BackgroundTasks) -> Dict[str, Any]:
             }
         
     except Exception as e:
+        # Clear starting flag on error
+        ztp_starting = False
         error_msg = f"Failed to start ZTP process: {str(e)}"
         log_status(error_msg, "error")
         raise HTTPException(status_code=500, detail=error_msg)
@@ -467,15 +490,268 @@ async def get_logs() -> List[Dict[str, Any]]:
     """Get status logs."""
     return status_log
 
+@app.post("/api/chat")
+async def chat_with_ai(message: ChatMessage) -> ChatResponse:
+    """Send message to AI agent and get response."""
+    global ztp_process, app_config
+    
+    if not ztp_process:
+        raise HTTPException(status_code=400, detail="ZTP process not initialized. Please start the ZTP process first.")
+    
+    if not app_config:
+        raise HTTPException(status_code=400, detail="Configuration not set. Please configure the application first.")
+    
+    # Check if OpenRouter API key is configured
+    openrouter_api_key = app_config.get('openrouter_api_key', '')
+    if not openrouter_api_key:
+        raise HTTPException(status_code=400, detail="OpenRouter API key not configured. Please add your API key in the Agent Configuration section.")
+    
+    try:
+        # Import the LangChain chat interface here to avoid circular imports
+        from ztp_agent.agent.langchain_chat_interface import LangChainChatInterface as ChatInterface
+        
+        # Get model from config
+        model = app_config.get('model', 'anthropic/claude-3-5-haiku')
+        
+        # Get switches from ZTP process inventory
+        switches = ztp_process.inventory.get('switches', {})
+        
+        # Create chat interface with proper parameters
+        chat_interface = ChatInterface(
+            openrouter_api_key=openrouter_api_key,
+            model=model,
+            switches=switches,
+            ztp_process=ztp_process
+        )
+        
+        # Get response from AI
+        response = await asyncio.get_event_loop().run_in_executor(
+            None, chat_interface.process_message, message.message
+        )
+        
+        log_status(f"AI Agent - User: {message.message[:50]}{'...' if len(message.message) > 50 else ''}")
+        log_status(f"AI Agent - Response: {response[:50]}{'...' if len(response) > 50 else ''}")
+        
+        return ChatResponse(response=response)
+        
+    except Exception as e:
+        error_msg = f"AI agent error: {str(e)}"
+        log_status(error_msg, "error")
+        raise HTTPException(status_code=500, detail=error_msg)
+
+@app.post("/api/chat/stream")
+async def chat_with_ai_stream(message: ChatMessage):
+    """Send message to AI agent and get streaming response."""
+    global ztp_process, app_config
+    
+    if not ztp_process:
+        raise HTTPException(status_code=400, detail="ZTP process not initialized")
+    
+    if not app_config:
+        raise HTTPException(status_code=400, detail="Configuration not set")
+    
+    openrouter_api_key = app_config.get('openrouter_api_key', '')
+    if not openrouter_api_key:
+        raise HTTPException(status_code=400, detail="OpenRouter API key not configured")
+    
+    async def generate_stream():
+        """Generate Server-Sent Events stream."""
+        try:
+            # Send multiple initial chunks to prime browser buffer
+            for i in range(3):
+                yield f": initializing stream {i}\n\n"
+                await asyncio.sleep(0.001)  # Force async yield
+            
+            # Send a large initial chunk
+            yield ": " + "x" * 8192 + "\n\n"
+            await asyncio.sleep(0.001)
+            
+            # Import here to avoid circular imports
+            from ztp_agent.agent.langchain_chat_interface import LangChainChatInterface as ChatInterface
+            import queue
+            import threading
+            import asyncio
+            
+            # Create a queue to communicate between threads
+            message_queue = queue.Queue()
+            final_response = {"response": "", "error": None}
+            
+            def stream_callback(step_type: str, content: str):
+                """Callback function to receive streaming updates."""
+                logger.debug(f"Stream callback received: {step_type} - {content[:100]}{'...' if len(content) > 100 else ''}")
+                message_queue.put({"type": step_type, "content": content})
+                # Add a small delay to ensure message is processed
+                import time
+                time.sleep(0.01)
+            
+            def run_agent():
+                """Run the agent in a separate thread."""
+                try:
+                    # Get model and switches
+                    model = app_config.get('model', 'anthropic/claude-3-5-haiku')
+                    switches = ztp_process.inventory.get('switches', {})
+                    
+                    # Create chat interface
+                    chat_interface = ChatInterface(
+                        openrouter_api_key=openrouter_api_key,
+                        model=model,
+                        switches=switches,
+                        ztp_process=ztp_process
+                    )
+                    
+                    # Process with streaming callback
+                    response = chat_interface.process_message_with_streaming(
+                        message.message, stream_callback
+                    )
+                    
+                    final_response["response"] = response
+                    
+                except Exception as e:
+                    final_response["error"] = str(e)
+                finally:
+                    # Signal completion
+                    message_queue.put({"type": "complete", "content": ""})
+            
+            # Start agent in background thread
+            agent_thread = threading.Thread(target=run_agent)
+            agent_thread.start()
+            
+            # Stream messages as they come in
+            while True:
+                try:
+                    # Get message from queue (blocks until available)
+                    msg = message_queue.get(timeout=1)
+                    
+                    if msg["type"] == "complete":
+                        # Send final response if no error
+                        if final_response["error"]:
+                            logger.debug(f"Streaming: Sending error - {final_response['error']}")
+                            padding = " " * 1024
+                            yield f"data: {json.dumps({'type': 'error', 'content': final_response['error']})}\n\n{padding}\n\n"
+                        elif final_response["response"]:
+                            logger.debug(f"Streaming: Sending final response - {final_response['response'][:50]}...")
+                            padding = " " * 1024
+                            yield f"data: {json.dumps({'type': 'final', 'content': final_response['response']})}\n\n{padding}\n\n"
+                        break
+                    else:
+                        # Send intermediate step
+                        logger.debug(f"Streaming: Sending intermediate step - {msg['type']}: {msg['content'][:50]}...")
+                        # Add padding and multiple chunks to force browser to flush buffer
+                        yield f"data: {json.dumps(msg)}\n\n"
+                        await asyncio.sleep(0.001)  # Force async processing
+                        
+                        # Send padding in separate chunk
+                        padding = "x" * 2048
+                        yield f": {padding}\n\n"
+                        await asyncio.sleep(0.001)
+                        
+                except queue.Empty:
+                    # Send heartbeat to keep connection alive
+                    padding = " " * 1024  # 1KB of padding
+                    yield f"data: {json.dumps({'type': 'heartbeat', 'content': ''})}\n\n{padding}\n\n"
+                    continue
+            
+            # Wait for thread to finish
+            agent_thread.join(timeout=5)
+            
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Cache-Control"
+        }
+    )
+
+@app.websocket("/ws/chat")
+async def websocket_chat(websocket: WebSocket):
+    """WebSocket endpoint for real-time chat streaming."""
+    await websocket.accept()
+    
+    try:
+        # Receive the message
+        data = await websocket.receive_json()
+        message = data.get("message", "")
+        
+        if not ztp_process:
+            await websocket.send_json({"type": "error", "content": "ZTP process not initialized"})
+            return
+        
+        if not app_config:
+            await websocket.send_json({"type": "error", "content": "Configuration not set"})
+            return
+        
+        openrouter_api_key = app_config.get('openrouter_api_key', '')
+        if not openrouter_api_key:
+            await websocket.send_json({"type": "error", "content": "OpenRouter API key not configured"})
+            return
+        
+        # Create chat interface
+        from ztp_agent.agent.langchain_chat_interface import LangChainChatInterface as ChatInterface
+        
+        model = app_config.get('model', 'anthropic/claude-3-5-haiku')
+        switches = ztp_process.inventory.get('switches', {})
+        
+        chat_interface = ChatInterface(
+            openrouter_api_key=openrouter_api_key,
+            model=model,
+            switches=switches,
+            ztp_process=ztp_process
+        )
+        
+        # Define WebSocket callback
+        async def ws_callback(step_type: str, content: str):
+            """Send message immediately via WebSocket."""
+            await websocket.send_json({"type": step_type, "content": content})
+        
+        # Process message with WebSocket streaming
+        try:
+            response = await chat_interface.process_message_with_async_streaming(message, ws_callback)
+            # Send final response
+            await websocket.send_json({"type": "final", "content": response})
+        except Exception as e:
+            await websocket.send_json({"type": "error", "content": str(e)})
+        
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        await websocket.send_json({"type": "error", "content": str(e)})
+    finally:
+        await websocket.close()
+
 async def run_ztp_process():
     """Run the ZTP process in the background."""
-    global ztp_process
+    global ztp_process, ztp_starting
+    import asyncio
     
     if ztp_process:
         # The ZTP process starts automatically when switches are added
         # We just need to start the background thread
         if not ztp_process.running:
             ztp_process.start()
+            
+            # Wait a moment for the process to actually start, then clear starting flag
+            await asyncio.sleep(1)
+            
+            # Double check that the process is actually running before clearing flag
+            if ztp_process.running:
+                ztp_starting = False
+                log_status("ZTP process started successfully")
+            else:
+                # If not running after start(), wait a bit more and check again
+                await asyncio.sleep(2)
+                if ztp_process.running:
+                    ztp_starting = False
+                    log_status("ZTP process started after delay")
+                else:
+                    # If still not running, clear flag anyway but log warning
+                    ztp_starting = False
+                    log_status("ZTP process start command completed but not yet running", "warning")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
