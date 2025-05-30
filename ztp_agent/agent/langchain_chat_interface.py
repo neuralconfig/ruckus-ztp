@@ -1,6 +1,7 @@
 """
 LangChain chat interface module that integrates the AI agent with the CLI
 """
+import asyncio
 import logging
 from typing import Dict, List, Optional, Any
 
@@ -164,50 +165,48 @@ class LangChainChatInterface:
         You are a network assistant specialized in RUCKUS ICX FastIron switches and Zero-Touch Provisioning (ZTP).
         You help configure and manage network devices in a ZTP environment.
         
-        TOOL SELECTION GUIDELINES:
-        - For ZTP-related questions ("is ZTP running?", "ZTP status", "ZTP process"): Use get_ztp_status FIRST
-        - For access point questions ("AP status", "access points"): Use get_ap_inventory  
-        - For switch discovery ("list switches", "available switches"): Use get_switches first
-        - For port operations: Always get_port_status before making changes
-        - For network topology: Use get_lldp_neighbors
-        - For detailed diagnostics: Use run_show_command with appropriate ICX commands
-        - For general network overview: Use get_network_summary
+        IMPORTANT: You have access to tools that you should use to answer questions and perform operations.
+        Think step by step about which tool(s) would best help answer the user's question.
         
-        CRITICAL: When user asks about "ZTP" or "Zero Touch Provisioning", always use get_ztp_status NOT get_switches!
-        
-        AVAILABLE TOOLS BY CATEGORY:
+        AVAILABLE TOOLS:
         
         🔍 DISCOVERY & STATUS:
-        - get_switches: List all managed switches (use this first for switch operations)
-        - get_ztp_status: ZTP process status, statistics, configuration details
-        - get_ap_inventory: Access point inventory and connection details
-        - get_lldp_neighbors: Network topology and neighbor discovery
-        - get_network_summary: Comprehensive network overview
-        - get_switch_details: Detailed info for specific switch (hostname, model, ports)
+        - get_switches: List all managed switches in the network
+        - get_ztp_status: Get ZTP process status, statistics, and configuration details
+        - get_ap_inventory: Get access point inventory and connection details
+        - get_lldp_neighbors: Discover network topology and neighbor connections
+        - get_network_summary: Get comprehensive overview of the entire network
+        - get_switch_details: Get detailed information about a specific switch (hostname, model, ports)
         
         🔧 PORT MANAGEMENT:
-        - get_port_status: Check port status, VLAN, PoE (use before changes)
+        - get_port_status: Check port status, VLAN assignment, and PoE state
         - change_port_vlan: Modify port VLAN assignment
-        - set_port_status: Enable/disable ports
-        - set_poe_status: Control PoE power delivery
+        - set_port_status: Enable or disable ports
+        - set_poe_status: Control PoE power delivery on ports
         
         📋 DIAGNOSTICS:
-        - run_show_command: Execute ICX CLI commands (show version, show interfaces brief, 
-          show running-config, show vlan, show mac-address, show spanning-tree, etc.)
+        - run_show_command: Execute diagnostic 'show' commands on switches (e.g., show interfaces brief, 
+          show version, show running-config, show vlan, show mac-address, show log)
         
-        OPERATION WORKFLOW:
-        1. For switch operations: Start with get_switches to see available devices
-        2. For port changes: Check current status with get_port_status first
-        3. For troubleshooting: Use get_lldp_neighbors and run_show_command
-        4. For ZTP questions: Use get_ztp_status (not get_ap_inventory)
+        APPROACH:
+        1. Analyze the user's question to understand what information they need
+        2. Select the most appropriate tool(s) to gather that information
+        3. If multiple tools might be needed, start with the most general one
+        4. Use the tool results to provide a complete and accurate answer
+        
+        EXAMPLES:
+        - "Are there any interface errors on switch X?" → Use run_show_command with "show interfaces brief"
+        - "What VLANs are configured?" → Use run_show_command with "show vlan"
+        - "Is ZTP running?" → Use get_ztp_status
+        - "What switches are available?" → Use get_switches
+        - "Show me the network topology" → Use get_lldp_neighbors or get_network_summary
         
         RUCKUS ICX CONTEXT:
-        - Ports are named as x/y/z format (e.g., 1/1/7, 1/1/8)
+        - Ports use x/y/z format (e.g., 1/1/7)
         - VLANs range from 1-4094
-        - PoE available on supported ports
+        - Common commands: show interfaces brief, show version, show vlan, show running-config
         
-        Always provide clear explanations of what you found and any changes made.
-        Verify results when possible and suggest next steps for complex operations.
+        Always provide clear, concise answers based on the actual tool results.
         """
         
         # Create the prompt template
@@ -356,118 +355,162 @@ class LangChainChatInterface:
             raise
     
     async def _execute_agent_with_async_streaming(self, message: str, async_stream_callback=None) -> str:
-        """Execute the agent manually with async real-time streaming."""
+        """Execute the agent with async real-time streaming using proper LangChain callbacks."""
+        from langchain_core.callbacks import AsyncCallbackHandler
+        from typing import Any, Dict, List, Optional, Union
+        from uuid import UUID
         import asyncio
         
-        try:
-            # Send thinking message
-            if async_stream_callback:
-                await async_stream_callback("thinking", "Analyzing your request...")
-                await asyncio.sleep(0.1)
+        class AsyncStreamingCallback(AsyncCallbackHandler):
+            """Async callback handler for streaming agent execution."""
             
-            # Get the tools
-            tools = self.agent_executor.tools
+            def __init__(self, stream_callback):
+                self.stream_callback = stream_callback
+                self.current_reasoning = ""
+                self.tool_inputs = {}
             
-            # Analyze the request in detail
-            if async_stream_callback:
-                await async_stream_callback("thinking", "Analyzing your request for keywords and patterns...")
-                await asyncio.sleep(0.1)
+            async def on_llm_start(self, serialized: Dict[str, Any], prompts: List[str], **kwargs) -> None:
+                """Called when LLM starts."""
+                if self.stream_callback:
+                    await self.stream_callback("thinking", "Thinking...")
+            
+            async def on_llm_new_token(self, token: str, **kwargs) -> None:
+                """Called on each new token from LLM."""
+                self.current_reasoning += token
                 
-                # Show analysis details
-                analysis = self._analyze_request(message)
-                await async_stream_callback("thinking", f"Analysis: {analysis}")
-                await asyncio.sleep(0.1)
-                
-                await async_stream_callback("thinking", "Selecting appropriate tool from available network tools...")
-                await asyncio.sleep(0.1)
+                # Stream reasoning in real-time as it's generated  
+                if self.stream_callback and len(self.current_reasoning) > 50:
+                    # Check if we have a complete thought (ends with period, question mark, etc.)
+                    if any(self.current_reasoning.rstrip().endswith(p) for p in ['.', '?', '!', ':', '\n']):
+                        reasoning = self.current_reasoning.strip()
+                        if reasoning and not reasoning.startswith('{'):  # Skip JSON-like content
+                            await self.stream_callback("thinking", reasoning)
+                        self.current_reasoning = ""
             
-            # Determine which tool to use based on the message content
-            tool_to_use = self._determine_tool(message, tools)
+            async def on_llm_end(self, response: Any, **kwargs) -> None:
+                """Called when LLM ends."""
+                # Don't send anything here - let the final answer come through the direct return path
+                # This prevents duplication of the final reasoning
+                self.current_reasoning = ""
             
-            if tool_to_use:
-                # Show detailed reasoning about tool selection
-                if async_stream_callback:
-                    reasoning = self._explain_tool_selection(tool_to_use.name, message)
-                    await async_stream_callback("thinking", f"Selected tool: {tool_to_use.name}. {reasoning}")
-                    await asyncio.sleep(0.1)
+            async def on_tool_start(self, serialized: Dict[str, Any], input_str: str, **kwargs) -> None:
+                """Called when tool starts."""
+                tool_name = serialized.get("name", "Unknown")
                 
-                # Execute the tool with detailed parameter info
+                if self.stream_callback:
+                    # Parse tool input - handle both string and dict inputs
+                    try:
+                        import json
+                        
+                        # Handle different input formats
+                        if isinstance(input_str, dict):
+                            tool_input = input_str
+                        elif isinstance(input_str, str):
+                            if input_str.strip().startswith('{'):
+                                tool_input = json.loads(input_str)
+                            else:
+                                # Try to parse as a simple parameter string
+                                tool_input = {"input": input_str}
+                        else:
+                            tool_input = {}
+                        
+                        self.tool_inputs[tool_name] = tool_input
+                        
+                        # Format the invocation message with parameters
+                        if tool_input:
+                            params_list = []
+                            for k, v in tool_input.items():
+                                if isinstance(v, str) and len(v) > 50:
+                                    params_list.append(f"{k}='{v[:50]}...'")
+                                else:
+                                    params_list.append(f"{k}='{v}'")
+                            params_str = ", ".join(params_list)
+                            await self.stream_callback("invoking", f"Invoking: `{tool_name}` with {params_str}")
+                        else:
+                            await self.stream_callback("invoking", f"Invoking: `{tool_name}`")
+                    except Exception as e:
+                        # Log the error for debugging
+                        logger.debug(f"Error parsing tool input: {e}, input_str type: {type(input_str)}, value: {input_str}")
+                        await self.stream_callback("invoking", f"Invoking: `{tool_name}`")
+            
+            async def on_tool_end(self, output: str, **kwargs) -> None:
+                """Called when tool ends."""
+                if self.stream_callback and output:
+                    # Create summary of tool output
+                    summary = self._summarize_output(output)
+                    if summary:
+                        await self.stream_callback("result", summary)
+            
+            def _summarize_output(self, output: str) -> Optional[str]:
+                """Summarize tool output."""
                 try:
-                    # Check if this is a tool that needs parameters
-                    if tool_to_use.name == "run_show_command":
-                        # Extract switch IP and command from message
-                        switch_ip, command = self._parse_show_command_request(message)
-                        if switch_ip and command:
-                            if async_stream_callback:
-                                await async_stream_callback("invoking", f"Invoking: `{tool_to_use.name}` with parameters: switch_ip='{switch_ip}', command='{command}'")
-                                await asyncio.sleep(0.1)
-                            result = tool_to_use.run({"switch_ip": switch_ip, "command": command})
-                        else:
-                            if async_stream_callback:
-                                await async_stream_callback("invoking", f"Invoking: `{tool_to_use.name}` - parsing request parameters")
-                                await asyncio.sleep(0.1)
-                            result = {"error": "Could not parse switch IP or command from request"}
-                    elif tool_to_use.name == "get_switch_details":
-                        # Extract switch IP from message
-                        switch_ip = self._extract_switch_ip(message)
-                        if switch_ip:
-                            if async_stream_callback:
-                                await async_stream_callback("invoking", f"Invoking: `{tool_to_use.name}` with parameters: switch_ip='{switch_ip}'")
-                                await asyncio.sleep(0.1)
-                            result = tool_to_use.run({"switch_ip": switch_ip})
-                        else:
-                            if async_stream_callback:
-                                await async_stream_callback("invoking", f"Invoking: `{tool_to_use.name}` - extracting switch IP from message")
-                                await asyncio.sleep(0.1)
-                            result = {"error": "Could not find switch IP in request"}
-                    else:
-                        # Tools that don't need parameters
-                        if async_stream_callback:
-                            await async_stream_callback("invoking", f"Invoking: `{tool_to_use.name}` with no parameters")
-                            await asyncio.sleep(0.1)
-                        result = tool_to_use.run({})
-                    
-                    # Send detailed result information
-                    if result:
-                        # First show what we received
-                        if async_stream_callback:
-                            await async_stream_callback("thinking", f"Tool execution completed. Processing {len(str(result))} characters of output...")
-                            await asyncio.sleep(0.1)
+                    if isinstance(output, str) and output.strip().startswith('{'):
+                        import json
+                        data = json.loads(output)
                         
-                        # Then show summary
-                        summary = self._summarize_tool_output(str(result))
-                        if summary and async_stream_callback:
-                            await async_stream_callback("result", f"Tool result: {summary}")
-                            await asyncio.sleep(0.1)
-                        
-                        # Show additional details for show commands
-                        if tool_to_use.name == "run_show_command" and async_stream_callback:
-                            await self._send_command_details(result, async_stream_callback)
+                        if isinstance(data, dict):
+                            if 'success' in data:
+                                if data['success']:
+                                    return "Tool executed successfully"
+                                else:
+                                    return f"Tool failed: {data.get('error', 'Unknown error')}"
+                            elif 'running' in data:
+                                running = data.get('running', False)
+                                switches = data.get('switches_discovered', 0)
+                                aps = data.get('aps_discovered', 0)
+                                return f"ZTP is {'running' if running else 'stopped'}, found {switches} switches and {aps} APs"
+                        elif isinstance(data, list):
+                            return f"Found {len(data)} items"
                     
-                    # Generate final response
-                    if async_stream_callback:
-                        await async_stream_callback("thinking", "Generating response...")
-                        await asyncio.sleep(0.1)
+                    if len(str(output)) > 100:
+                        return f"Received {len(str(output))} characters of output"
                     
-                    # Create a response based on the tool result
-                    response = self._format_tool_response(tool_to_use.name, result, message)
-                    return response
-                    
-                except Exception as e:
-                    if async_stream_callback:
-                        await async_stream_callback("error", f"Tool execution failed: {str(e)}")
-                    return f"Sorry, I encountered an error while executing {tool_to_use.name}: {str(e)}"
+                    return None
+                except:
+                    return None
+        
+        try:
+            # Send initial thinking message
+            if async_stream_callback:
+                await async_stream_callback("thinking", "Processing your request...")
             
-            else:
-                # Fallback response
-                if async_stream_callback:
-                    await async_stream_callback("thinking", "Generating direct response...")
-                    await asyncio.sleep(0.1)
-                return "I can help you with network operations. Try asking about ZTP status, switches, access points, or specific switch commands."
+            # Create async callback
+            callback = AsyncStreamingCallback(async_stream_callback)
+            
+            # Execute agent with callback
+            response = await self.agent_executor.ainvoke(
+                {"input": message},
+                config={"callbacks": [callback]}
+            )
+            
+            # Log the raw response for debugging
+            logger.info(f"Agent response type: {type(response)}, keys: {response.keys() if isinstance(response, dict) else 'N/A'}")
+            
+            # Extract and return the final answer (will be sent with proper "final" styling)
+            final_answer = response.get("output", "No response generated")
+            
+            # Log the final answer for debugging
+            logger.info(f"Returning final answer: {len(final_answer)} chars, preview: {final_answer[:100]}...")
+            
+            return final_answer
                 
         except Exception as e:
-            logger.error(f"Error in async manual streaming execution: {e}")
-            return f"Sorry, I encountered an error: {str(e)}"
+            error_msg = str(e)
+            logger.error(f"Error in agent execution: {error_msg}", exc_info=True)
+            
+            # Check if this is the asyncio error
+            if "cannot access local variable 'asyncio'" in error_msg:
+                logger.error("Asyncio scope error detected - this suggests a problem with variable scoping in callbacks")
+                # Don't send the confusing asyncio error to the user
+                error_msg = "An error occurred while processing your request. Please try again."
+            
+            if async_stream_callback:
+                try:
+                    await async_stream_callback("error", error_msg)
+                except Exception as callback_error:
+                    logger.error(f"Failed to send error via callback: {callback_error}")
+            
+            return f"Sorry, I encountered an error: {error_msg}"
     
     def _explain_tool_selection(self, tool_name: str, message: str) -> str:
         """Explain why a particular tool was selected."""
@@ -523,6 +566,7 @@ class LangChainChatInterface:
     
     async def _send_command_details(self, result, async_stream_callback):
         """Send detailed information about command execution."""
+        import asyncio
         try:
             if isinstance(result, dict) and result.get('success'):
                 output = result.get('output', '')
@@ -531,7 +575,6 @@ class LangChainChatInterface:
                 
                 # Show command execution details
                 await async_stream_callback("thinking", f"Successfully executed '{command}' on switch {switch_ip}")
-                await asyncio.sleep(0.1)
                 
                 # Analyze the output for interesting details
                 if 'show interfaces brief' in command.lower():
@@ -542,13 +585,13 @@ class LangChainChatInterface:
             elif isinstance(result, dict) and not result.get('success'):
                 error = result.get('error', 'Unknown error')
                 await async_stream_callback("thinking", f"Command execution failed: {error}")
-                await asyncio.sleep(0.1)
                 
         except Exception as e:
             logger.error(f"Error sending command details: {e}")
     
     async def _analyze_interface_output(self, output, async_stream_callback):
         """Analyze interface command output and provide insights."""
+        import asyncio
         try:
             lines = output.split('\n')
             up_count = 0
@@ -565,19 +608,18 @@ class LangChainChatInterface:
             
             if up_count > 0 or down_count > 0 or disabled_count > 0:
                 await async_stream_callback("thinking", f"Interface analysis: {up_count} Up, {down_count} Down, {disabled_count} Disabled ports")
-                await asyncio.sleep(0.1)
                 
         except Exception as e:
             logger.error(f"Error analyzing interface output: {e}")
     
     async def _analyze_version_output(self, output, async_stream_callback):
         """Analyze version command output and provide insights."""
+        import asyncio
         try:
             lines = output.split('\n')
             for line in lines:
                 if 'ICX' in line and ('Switch' in line or 'Router' in line):
                     await async_stream_callback("thinking", f"Device model identified: {line.strip()}")
-                    await asyncio.sleep(0.1)
                     break
                     
         except Exception as e:
@@ -728,7 +770,7 @@ class LangChainChatInterface:
         elif tool_name == "get_network_summary":
             return self._format_network_summary_response(result)
         else:
-            return f"Executed {tool_name}: {str(result)[:200]}..."
+            return f"Executed {tool_name}:\n\n{str(result)}"
     
     def _format_show_command_response(self, result, original_message: str) -> str:
         """Format show command response."""
@@ -742,18 +784,18 @@ class LangChainChatInterface:
                     # Check for interface errors specifically
                     if "error" in original_message.lower() and "interface" in original_message.lower():
                         if "down" in output.lower() or "error" in output.lower():
-                            return f"Found interface issues on switch {switch_ip}. Some interfaces may be down or have errors. Full output:\n\n{output[:500]}{'...' if len(output) > 500 else ''}"
+                            return f"Found interface issues on switch {switch_ip}. Some interfaces may be down or have errors. Full output:\n\n{output}"
                         else:
                             return f"No obvious interface errors found on switch {switch_ip}. All interfaces appear to be functioning normally."
                     else:
-                        return f"Command '{command}' executed successfully on switch {switch_ip}:\n\n{output[:500]}{'...' if len(output) > 500 else ''}"
+                        return f"Command '{command}' executed successfully on switch {switch_ip}:\n\n{output}"
                 else:
                     error = result.get('error', 'Unknown error')
                     return f"Command failed: {error}"
             else:
-                return f"Show command result: {str(result)[:300]}..."
+                return f"Show command result:\n\n{str(result)}"
         except Exception:
-            return f"Show command executed: {str(result)[:200]}..."
+            return f"Show command executed:\n\n{str(result)}"
     
     def _format_switch_details_response(self, result) -> str:
         """Format switch details response."""
@@ -775,9 +817,9 @@ class LangChainChatInterface:
                     error = result.get('error', 'Switch not reachable')
                     return f"Cannot reach switch {result.get('ip', 'unknown')}: {error}"
             else:
-                return f"Switch details: {str(result)[:200]}..."
+                return f"Switch details:\n\n{str(result)}"
         except Exception:
-            return f"Switch details retrieved: {str(result)[:200]}..."
+            return f"Switch details retrieved:\n\n{str(result)}"
     
     def _format_network_summary_response(self, result) -> str:
         """Format network summary response."""
@@ -805,9 +847,9 @@ class LangChainChatInterface:
                 
                 return "Network Summary:\n" + "\n".join(summary_parts)
             else:
-                return f"Network summary: {str(result)[:200]}..."
+                return f"Network summary:\n\n{str(result)}"
         except Exception:
-            return f"Network summary retrieved: {str(result)[:200]}..."
+            return f"Network summary retrieved:\n\n{str(result)}"
     
     def _format_ztp_status_response(self, result) -> str:
         """Format ZTP status response."""
@@ -827,27 +869,32 @@ class LangChainChatInterface:
             return f"ZTP process is currently {status_text}. Discovered {switches} switches ({configured} configured) and {aps} access points."
             
         except Exception:
-            return f"ZTP status retrieved: {str(result)[:200]}..."
+            return f"ZTP status retrieved:\n\n{str(result)}"
     
     def _format_switches_response(self, result) -> str:
         """Format switches response."""
         try:
             if isinstance(result, list):
-                return f"Found {len(result)} switches in the network: {', '.join([s.get('ip', 'Unknown') for s in result[:5]])}{'...' if len(result) > 5 else ''}"
+                switches_list = [s.get('ip', 'Unknown') for s in result]
+                return f"Found {len(result)} switches in the network: {', '.join(switches_list)}"
             else:
-                return f"Switch information: {str(result)[:200]}..."
+                return f"Switch information:\n\n{str(result)}"
         except Exception:
-            return f"Switches retrieved: {str(result)[:200]}..."
+            return f"Switches retrieved:\n\n{str(result)}"
     
     def _format_ap_response(self, result) -> str:
         """Format AP response."""
         try:
             if isinstance(result, list):
-                return f"Found {len(result)} access points. " + (f"First few: {', '.join([ap.get('hostname', ap.get('mac', 'Unknown')) for ap in result[:3]])}{'...' if len(result) > 3 else ''}" if result else "No access points discovered yet.")
+                if result:
+                    ap_list = [ap.get('hostname', ap.get('mac', 'Unknown')) for ap in result]
+                    return f"Found {len(result)} access points: {', '.join(ap_list)}"
+                else:
+                    return "No access points discovered yet."
             else:
-                return f"Access point information: {str(result)[:200]}..."
+                return f"Access point information:\n\n{str(result)}"
         except Exception:
-            return f"Access points retrieved: {str(result)[:200]}..."
+            return f"Access points retrieved:\n\n{str(result)}"
     
     def _format_response_with_steps(self, final_response: str, intermediate_steps: List) -> str:
         """Format the response with intermediate steps for better UX."""

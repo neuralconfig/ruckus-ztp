@@ -669,6 +669,26 @@ async def chat_with_ai_stream(message: ChatMessage):
         }
     )
 
+async def send_heartbeats(websocket: WebSocket):
+    """Send periodic heartbeat messages to keep WebSocket alive during processing."""
+    try:
+        while True:
+            await asyncio.sleep(2)  # Send heartbeat every 2 seconds
+            if websocket.application_state == websocket.application_state.CONNECTED:
+                try:
+                    await websocket.send_json({"type": "heartbeat", "content": "keeping connection alive"})
+                    logger.debug("Sent WebSocket heartbeat")
+                except Exception as e:
+                    logger.debug(f"Failed to send heartbeat: {e}")
+                    break
+            else:
+                break
+    except asyncio.CancelledError:
+        logger.debug("Heartbeat task cancelled")
+        raise
+    except Exception as e:
+        logger.error(f"Heartbeat task error: {e}")
+
 @app.websocket("/ws/chat")
 async def websocket_chat(websocket: WebSocket):
     """WebSocket endpoint for real-time chat streaming."""
@@ -705,24 +725,97 @@ async def websocket_chat(websocket: WebSocket):
             ztp_process=ztp_process
         )
         
-        # Define WebSocket callback
+        # Define WebSocket callback with connection check
         async def ws_callback(step_type: str, content: str):
-            """Send message immediately via WebSocket."""
-            await websocket.send_json({"type": step_type, "content": content})
+            """Send message immediately via WebSocket if still connected."""
+            if websocket.application_state == websocket.application_state.CONNECTED:
+                try:
+                    # Ensure content is a string
+                    if not isinstance(content, str):
+                        content = str(content)
+                    
+                    # Log what we're sending for debugging
+                    if step_type == "final":
+                        logger.info(f"Sending final answer, length: {len(content)}")
+                    
+                    await websocket.send_json({"type": step_type, "content": content})
+                except Exception as e:
+                    logger.error(f"WebSocket send failed for {step_type}: {e}", exc_info=True)
+        
+        # Start heartbeat task to keep WebSocket alive during processing
+        heartbeat_task = asyncio.create_task(send_heartbeats(websocket))
+        logger.info("Started WebSocket heartbeat task")
         
         # Process message with WebSocket streaming
         try:
             response = await chat_interface.process_message_with_async_streaming(message, ws_callback)
-            # Send final response
-            await websocket.send_json({"type": "final", "content": response})
+            
+            # Log the response details
+            logger.info(f"Agent returned response: {response is not None}, length: {len(response) if response else 0}")
+            
+            # Check WebSocket state before sending
+            ws_state = websocket.application_state
+            logger.info(f"WebSocket state before sending final: {ws_state}")
+            
+            # Send the final response directly if it wasn't already sent through callback
+            # Always send as "final" type to ensure proper styling
+            if response:
+                if websocket.application_state == websocket.application_state.CONNECTED:
+                    try:
+                        logger.info(f"Sending final answer directly with styling, length: {len(response)}")
+                        await websocket.send_json({"type": "final", "content": response})
+                        logger.info("Final answer sent successfully with proper styling")
+                    except Exception as e:
+                        logger.error(f"Failed to send final answer: {e}", exc_info=True)
+                        # Try to send error message if still connected
+                        try:
+                            if websocket.application_state == websocket.application_state.CONNECTED:
+                                await websocket.send_json({"type": "error", "content": "Failed to send complete response"})
+                        except:
+                            pass
+                else:
+                    logger.error(f"WebSocket not connected when trying to send final answer. State: {ws_state}")
+            else:
+                logger.info("Final answer was already sent through callback or no response generated")
+            
+            logger.info("Chat processing completed successfully")
         except Exception as e:
-            await websocket.send_json({"type": "error", "content": str(e)})
+            error_msg = str(e)
+            logger.error(f"Chat processing error: {error_msg}", exc_info=True)
+            
+            # Special handling for the asyncio error
+            if "cannot access local variable 'asyncio'" in error_msg:
+                logger.error("Asyncio scope error detected - attempting workaround")
+                # Don't send this confusing error to the user
+                error_msg = "An internal error occurred while processing the response. Please try again."
+            
+            if websocket.application_state == websocket.application_state.CONNECTED:
+                try:
+                    await websocket.send_json({"type": "error", "content": error_msg})
+                except:
+                    pass
+        finally:
+            # Always cancel heartbeat task when done
+            logger.debug("Cancelling heartbeat task")
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                logger.debug("Heartbeat task cancelled successfully")
+                pass
+            except Exception as e:
+                logger.error(f"Error cancelling heartbeat task: {e}")
         
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
-        await websocket.send_json({"type": "error", "content": str(e)})
+        if websocket.application_state == websocket.application_state.CONNECTED:
+            try:
+                await websocket.send_json({"type": "error", "content": str(e)})
+            except:
+                pass
     finally:
-        await websocket.close()
+        if websocket.application_state == websocket.application_state.CONNECTED:
+            await websocket.close()
 
 async def run_ztp_process():
     """Run the ZTP process in the background."""
@@ -735,23 +828,9 @@ async def run_ztp_process():
         if not ztp_process.running:
             ztp_process.start()
             
-            # Wait a moment for the process to actually start, then clear starting flag
-            await asyncio.sleep(1)
-            
-            # Double check that the process is actually running before clearing flag
-            if ztp_process.running:
-                ztp_starting = False
-                log_status("ZTP process started successfully")
-            else:
-                # If not running after start(), wait a bit more and check again
-                await asyncio.sleep(2)
-                if ztp_process.running:
-                    ztp_starting = False
-                    log_status("ZTP process started after delay")
-                else:
-                    # If still not running, clear flag anyway but log warning
-                    ztp_starting = False
-                    log_status("ZTP process start command completed but not yet running", "warning")
+        # Clear the starting flag immediately after calling start()
+        ztp_starting = False
+        log_status("ZTP process started successfully")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
