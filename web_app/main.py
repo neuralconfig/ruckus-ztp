@@ -477,9 +477,15 @@ async def start_ztp(background_tasks: BackgroundTasks) -> Dict[str, Any]:
 @app.post("/api/ztp/stop")
 async def stop_ztp() -> Dict[str, str]:
     """Stop the ZTP process."""
-    global ztp_process
+    global ztp_process, ztp_starting
     
-    if not ztp_process or not ztp_process.running:
+    # Clear starting flag regardless of current state
+    ztp_starting = False
+    
+    if not ztp_process:
+        return {"message": "ZTP process is not initialized"}
+    
+    if not ztp_process.running:
         return {"message": "ZTP process is not running"}
     
     ztp_process.stop()
