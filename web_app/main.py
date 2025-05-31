@@ -435,6 +435,8 @@ async def start_ztp(background_tasks: BackgroundTasks) -> Dict[str, Any]:
         
         # Check if we have any successful connections
         if successful_switches == 0:
+            # Clear starting flag since we're not actually starting
+            ztp_starting = False
             error_msg = "No seed switches could be connected. Please check credentials and network connectivity."
             log_status(error_msg, "error")
             return {
@@ -475,9 +477,15 @@ async def start_ztp(background_tasks: BackgroundTasks) -> Dict[str, Any]:
 @app.post("/api/ztp/stop")
 async def stop_ztp() -> Dict[str, str]:
     """Stop the ZTP process."""
-    global ztp_process
+    global ztp_process, ztp_starting
     
-    if not ztp_process or not ztp_process.running:
+    # Clear starting flag regardless of current state
+    ztp_starting = False
+    
+    if not ztp_process:
+        return {"message": "ZTP process is not initialized"}
+    
+    if not ztp_process.running:
         return {"message": "ZTP process is not running"}
     
     ztp_process.stop()
@@ -822,15 +830,26 @@ async def run_ztp_process():
     global ztp_process, ztp_starting
     import asyncio
     
-    if ztp_process:
-        # The ZTP process starts automatically when switches are added
-        # We just need to start the background thread
-        if not ztp_process.running:
-            ztp_process.start()
-            
-        # Clear the starting flag immediately after calling start()
+    try:
+        if ztp_process:
+            # The ZTP process starts automatically when switches are added
+            # We just need to start the background thread
+            if not ztp_process.running:
+                ztp_process.start()
+                
+            # Clear the starting flag immediately after calling start()
+            ztp_starting = False
+            log_status("ZTP process started successfully")
+        else:
+            # Clear starting flag if no process exists
+            ztp_starting = False
+            log_status("No ZTP process to start", "warning")
+    except Exception as e:
+        # Clear starting flag on any error
         ztp_starting = False
-        log_status("ZTP process started successfully")
+        error_msg = f"Error starting ZTP process: {str(e)}"
+        log_status(error_msg, "error")
+        logger.exception("Exception in run_ztp_process")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")

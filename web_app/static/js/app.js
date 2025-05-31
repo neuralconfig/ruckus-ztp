@@ -169,10 +169,6 @@ function saveCredential() {
     updateCredentialsList();
     closeModal('credential-modal');
     
-    // Clear form
-    document.getElementById('modal-username').value = '';
-    document.getElementById('modal-password').value = '';
-    
     showNotification('Credential added successfully', 'success');
 }
 
@@ -241,9 +237,6 @@ function saveSeedSwitch() {
     seedSwitches.push({ ip });
     updateSeedSwitchList();
     closeModal('switch-modal');
-    
-    // Clear form
-    document.getElementById('modal-switch-ip').value = '';
     
     showNotification('Seed switch added successfully', 'success');
 }
@@ -1314,11 +1307,54 @@ function clearLogs() {
 
 // Modal Management
 function showModal(modalId) {
-    document.getElementById(modalId).style.display = 'block';
+    const modal = document.getElementById(modalId);
+    modal.style.display = 'block';
+    
+    // Focus on the first input field
+    setTimeout(() => {
+        const firstInput = modal.querySelector('input[type="text"], input[type="password"]');
+        if (firstInput) {
+            firstInput.focus();
+        }
+    }, 100);
+    
+    // Add keydown event listener for Enter key and Escape key
+    const handleKeyDown = (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            // Find and click the primary save/submit button
+            const saveButton = modal.querySelector('.btn:not(.secondary)');
+            if (saveButton) {
+                saveButton.click();
+            }
+        } else if (event.key === 'Escape') {
+            event.preventDefault();
+            closeModal(modalId);
+        }
+    };
+    
+    // Add event listener to modal
+    modal.addEventListener('keydown', handleKeyDown);
+    
+    // Store the handler so we can remove it later
+    modal._keydownHandler = handleKeyDown;
 }
 
 function closeModal(modalId) {
-    document.getElementById(modalId).style.display = 'none';
+    const modal = document.getElementById(modalId);
+    modal.style.display = 'none';
+    
+    // Remove keydown event listener
+    if (modal._keydownHandler) {
+        modal.removeEventListener('keydown', modal._keydownHandler);
+        delete modal._keydownHandler;
+    }
+    
+    // Clear form fields
+    const inputs = modal.querySelectorAll('input[type="text"], input[type="password"]');
+    inputs.forEach(input => {
+        input.value = '';
+    });
 }
 
 // Click outside modal to close
