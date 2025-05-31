@@ -24,7 +24,7 @@ The web application provides a modern web interface for the RUCKUS ZTP Agent wit
 1. **Clone and navigate to the project:**
    ```bash
    git clone <your-repo>
-   cd neurocli
+   cd ruckus-ztp
    ```
 
 2. **Create and activate virtual environment:**
