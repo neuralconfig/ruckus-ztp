@@ -8,6 +8,7 @@ This tool provides a network engineer-friendly command-line interface for automa
 
 Key features:
 - **Web Interface**: Modern web application for managing ZTP processes with real-time monitoring
+- **iPhone App**: Native iOS application with full feature parity to the web interface
 - **Command-line Interface**: Tab completion and help system for CLI operations
 - **MAC-based Device Tracking**: Prevents duplicate entries when device IPs change via DHCP
 - **Real-time Status Monitoring**: Live SSH activity indicators and configuration progress tracking
@@ -35,14 +36,16 @@ Key features:
 
 1. Copy the example configuration file:
    ```
-   cp config/ztp_agent.ini.example ~/.ztp_agent.cfg
+   cp config/ztp_agent.ini.example config/ztp_agent.ini
    ```
-2. Edit the configuration file to set:
-   - OpenRouter API key for the chat interface
-   - Base configuration file (contains VLAN creation and other initial config)
-   - Network settings including VLAN IDs (these should match the VLANs in the base config)
-   - IP pool for management addresses (e.g., `192.168.10.0/24`)
-   - Gateway for new devices
+   
+2. Edit `config/ztp_agent.ini` to set your environment-specific values:
+   - **preferred_password**: Set a secure password for switch management
+   - **openrouter_api_key**: Add your OpenRouter API key for the AI chat interface (optional)
+   - **network settings**: Configure VLANs, IP pool, and gateway for your network
+   - **base_config_file**: Path to your base configuration template
+
+**Important**: The `config/ztp_agent.ini` file contains sensitive credentials and is excluded from version control. Never commit this file to your repository.
 
 ### Switch Default Credentials
 
@@ -69,6 +72,38 @@ python3 run.py
 ```
 
 The web interface will be available at `http://localhost:8000` and provides:
+
+### iPhone App
+
+The native iOS application provides the same functionality as the web interface with an optimized mobile experience:
+
+#### Features
+- **Real-time Device Monitoring**: Live status updates with pull-to-refresh
+- **Interactive Configuration**: Native iOS forms for credential and switch management  
+- **Network Topology View**: Draggable nodes with touch-optimized interface
+- **AI Chat Interface**: Natural language configuration assistance with real-time streaming
+- **Log Viewer**: Searchable and filterable system logs
+- **File Upload**: Camera roll and Files app integration for base configuration upload
+
+#### Requirements
+- iOS 15.0 or later
+- Xcode 13+ for development
+- Backend server running on accessible network
+
+#### Setup for Development
+1. Open `ios_app/ruckus-ztp/ruckus-ztp.xcodeproj` in Xcode
+2. Update `Config.swift` with your backend server IP:
+   ```swift
+   // For iOS Simulator (backend on same Mac)
+   static let baseURL = "http://localhost:8000"
+   
+   // For real device (update with your Mac's IP)
+   static let baseURL = "http://192.168.1.100:8000"
+   ```
+3. Build and run the app
+
+#### Backend Compatibility
+The iPhone app uses the same REST API endpoints as the web interface:
 
 - **Real-time Device Monitoring**: Live status updates with SSH activity indicators
 - **Interactive Configuration**: Easy credential management and seed switch setup
@@ -210,18 +245,28 @@ The chat interface allows you to interact with an AI agent that can perform netw
 ### Project Structure
 
 ```
-ztp_agent/
-├── cli/                      # Command-line interface
-│   └── commands/             # Command modules for different CLI functions
-├── network/                  # Network operations
-│   └── switch/               # Switch operations, organized by function
-│       ├── connection.py     # Core SSH connectivity
-│       ├── configuration.py  # Switch configuration operations
-│       ├── discovery.py      # Network discovery with LLDP
-│       └── enums.py          # Switch-related enumerations
-├── ztp/                      # ZTP process
-├── agent/                    # AI agent
-└── utils/                    # Utilities
+├── ztp_agent/               # Python backend
+│   ├── cli/                 # Command-line interface
+│   │   └── commands/        # Command modules for different CLI functions
+│   ├── network/             # Network operations
+│   │   └── switch/          # Switch operations, organized by function
+│   │       ├── connection.py     # Core SSH connectivity
+│   │       ├── configuration.py  # Switch configuration operations
+│   │       ├── discovery.py      # Network discovery with LLDP
+│   │       └── enums.py          # Switch-related enumerations
+│   ├── ztp/                 # ZTP process
+│   ├── agent/               # AI agent
+│   └── utils/               # Utilities
+├── web_app/                 # Web interface
+│   ├── main.py              # FastAPI backend server
+│   ├── static/              # CSS, JavaScript
+│   └── templates/           # HTML templates
+└── ios_app/                 # iPhone application
+    └── ruckus-ztp/          # Xcode project
+        ├── Models/          # Data models and API communication
+        ├── Views/           # SwiftUI views (Configuration, Monitoring, etc.)
+        ├── Managers/        # Network and configuration managers
+        └── Assets.xcassets  # App icons and images
 ```
 
 ### Base Configuration File

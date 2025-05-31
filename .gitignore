@@ -72,3 +72,19 @@ Thumbs.db
 CLAUDE.md
 ~/.ztp_agent.cfg
 ~/.ztp_agent.log
+
+# Configuration files with sensitive data
+config/ztp_agent.ini
+*.ini
+!*.ini.example
+
+# API keys and secrets
+.env
+*.env
+*.key
+*.pem
+
+# iOS development
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/

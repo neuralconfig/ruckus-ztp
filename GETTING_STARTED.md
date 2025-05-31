@@ -28,6 +28,19 @@ This guide will help you get started with the RUCKUS ZTP Agent.
 
 3. **Configure the Agent**
 
+   Copy the example configuration file and customize it:
+   
+   ```bash
+   cp config/ztp_agent.ini.example config/ztp_agent.ini
+   ```
+   
+   Edit `config/ztp_agent.ini` and set:
+   - `preferred_password`: A secure password for switch management
+   - `openrouter_api_key`: Your OpenRouter API key (optional, for AI chat)
+   - Network settings to match your environment
+   
+   **Note**: The `config/ztp_agent.ini` file is ignored by git to protect your credentials.
+
    ```bash
    cp config/ztp_agent.ini.example ~/.ztp_agent.cfg
    ```

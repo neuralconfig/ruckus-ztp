@@ -1,15 +1,29 @@
-# RUCKUS ZTP Agent Web Application Deployment Guide
+# RUCKUS ZTP Agent Deployment Guide
 
-This guide covers deploying the RUCKUS ZTP Agent Web Application both locally and to Google Cloud Run.
+This guide covers deploying the RUCKUS ZTP Agent including the web application, iPhone app, and CLI tool.
 
 ## Overview
 
-The web application provides a modern web interface for the RUCKUS ZTP Agent with:
+The RUCKUS ZTP Agent provides multiple interfaces for managing network devices:
+
+### Web Application
 - Configuration management for credentials, switches, and network settings
 - Real-time monitoring of the ZTP process
 - Interactive network topology visualization
 - AI agent integration with OpenRouter
-- Retro hacker theme matching neuralconfig.com
+- Modern responsive design
+
+### iPhone App
+- Native iOS application with full feature parity
+- Touch-optimized interface with draggable topology
+- Real-time WebSocket chat interface
+- File upload integration with iOS Files app
+- Pull-to-refresh and native form controls
+
+### Command Line Interface
+- Tab completion and help system
+- Direct SSH access to switches
+- Batch operations and scripting support
 
 ## Local Development and Testing
 
@@ -24,7 +38,7 @@ The web application provides a modern web interface for the RUCKUS ZTP Agent wit
 1. **Clone and navigate to the project:**
    ```bash
    git clone <your-repo>
-   cd neurocli
+   cd ruckus-ztp
    ```
 
 2. **Create and activate virtual environment:**
@@ -61,6 +75,34 @@ The web application provides a modern web interface for the RUCKUS ZTP Agent wit
 
 7. **Access the web interface:**
    Open your browser to `http://localhost:8000`
+
+### iPhone App Development Setup
+
+1. **Open the iOS project:**
+   ```bash
+   cd ios_app
+   open ruckus-ztp/ruckus-ztp.xcodeproj
+   ```
+
+2. **Configure backend URL for simulator:**
+   - Default Config.swift uses `localhost:8000` (works for simulator)
+   - No changes needed for simulator development
+
+3. **Configure for real device:**
+   Edit `ios_app/ruckus-ztp/ruckus-ztp/Models/Config.swift`:
+   ```swift
+   // Update with your Mac's IP address
+   static let baseURL = "http://192.168.1.100:8000"
+   static let wsURL = "ws://192.168.1.100:8000/ws"
+   ```
+
+4. **Build and run:**
+   - Select your target device or simulator
+   - Press Cmd+R to build and run
+
+5. **Enable network access:**
+   - Ensure Mac firewall allows connections on port 8000
+   - For real devices, backend must be accessible on local network
 
 ### Configuration
 
