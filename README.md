@@ -35,14 +35,16 @@ Key features:
 
 1. Copy the example configuration file:
    ```
-   cp config/ztp_agent.ini.example ~/.ztp_agent.cfg
+   cp config/ztp_agent.ini.example config/ztp_agent.ini
    ```
-2. Edit the configuration file to set:
-   - OpenRouter API key for the chat interface
-   - Base configuration file (contains VLAN creation and other initial config)
-   - Network settings including VLAN IDs (these should match the VLANs in the base config)
-   - IP pool for management addresses (e.g., `192.168.10.0/24`)
-   - Gateway for new devices
+   
+2. Edit `config/ztp_agent.ini` to set your environment-specific values:
+   - **preferred_password**: Set a secure password for switch management
+   - **openrouter_api_key**: Add your OpenRouter API key for the AI chat interface (optional)
+   - **network settings**: Configure VLANs, IP pool, and gateway for your network
+   - **base_config_file**: Path to your base configuration template
+
+**Important**: The `config/ztp_agent.ini` file contains sensitive credentials and is excluded from version control. Never commit this file to your repository.
 
 ### Switch Default Credentials
 
