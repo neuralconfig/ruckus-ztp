@@ -96,20 +96,15 @@ struct LogsView: View {
         
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
-            let logData = try JSONDecoder().decode(LogData.self, from: data)
+            // The API returns an array of log objects with timestamp, level, message
+            let logObjects = try JSONDecoder().decode([LogObject].self, from: data)
             
-            self.logs = logData.logs.map { logLine in
-                // Parse log line format: [timestamp] [level] message
-                let components = logLine.components(separatedBy: " ")
-                let timestamp = components.first ?? ""
-                let level = components.dropFirst().first ?? ""
-                let message = components.dropFirst(2).joined(separator: " ")
-                
+            self.logs = logObjects.map { logObj in
                 return LogEntry(
                     id: UUID(),
-                    timestamp: timestamp,
-                    level: LogLevel.from(string: level),
-                    message: message
+                    timestamp: logObj.timestamp,
+                    level: LogLevel.from(string: logObj.level),
+                    message: logObj.message
                 )
             }
         } catch {
@@ -130,8 +125,10 @@ struct LogsView: View {
 }
 
 // MARK: - Log Models
-struct LogData: Codable {
-    let logs: [String]
+struct LogObject: Codable {
+    let timestamp: String
+    let level: String
+    let message: String
 }
 
 struct LogEntry: Identifiable {

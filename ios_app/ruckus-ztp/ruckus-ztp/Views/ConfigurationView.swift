@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ConfigurationView: View {
     @EnvironmentObject var configManager: ConfigurationManager
@@ -7,6 +8,10 @@ struct ConfigurationView: View {
     @State private var showingAddSeedSwitch = false
     @State private var showingSaveAlert = false
     @State private var saveError: String?
+    @State private var showingFilePicker = false
+    @State private var showingConfigNameInput = false
+    @State private var newConfigName = ""
+    @State private var selectedFileURL: URL?
     
     var body: some View {
         NavigationView {
@@ -67,6 +72,12 @@ struct ConfigurationView: View {
                         ForEach(Array(configManager.baseConfigs.keys.sorted()), id: \.self) { name in
                             Text(name).tag(name)
                         }
+                    }
+                    
+                    Button(action: {
+                        showingFilePicker = true
+                    }) {
+                        Label("Upload New Configuration", systemImage: "doc.badge.plus")
                     }
                     
                     if let content = configManager.baseConfigs[configManager.baseConfigName] {
@@ -154,13 +165,21 @@ struct ConfigurationView: View {
                         }
                     }) {
                         HStack {
-                            Image(systemName: networkManager.ztpStatus.running ? "stop.circle" : "play.circle")
-                            Text(networkManager.ztpStatus.running ? "Stop ZTP Process" : "Start ZTP Process")
+                            if networkManager.ztpStatus.starting {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                                Text("Starting...")
+                            } else {
+                                Image(systemName: networkManager.ztpStatus.running ? "stop.circle" : "play.circle")
+                                Text(networkManager.ztpStatus.running ? "Stop ZTP Process" : "Start ZTP Process")
+                            }
                         }
                         .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(BorderedProminentButtonStyle())
-                    .tint(networkManager.ztpStatus.running ? .red : .green)
+                    .tint(networkManager.ztpStatus.starting ? .orange : 
+                          (networkManager.ztpStatus.running ? .red : .green))
+                    .disabled(networkManager.ztpStatus.starting)
                 }
             }
             .navigationTitle("RUCKUS ZTP Agent")
@@ -174,13 +193,41 @@ struct ConfigurationView: View {
                     configManager.addSeedSwitch(seedSwitch)
                 }
             }
-            .alert("Configuration Saved", isPresented: $showingSaveAlert) {
+            .fileImporter(
+                isPresented: $showingFilePicker,
+                allowedContentTypes: [.plainText, UTType(filenameExtension: "txt")!],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    if let url = urls.first {
+                        selectedFileURL = url
+                        showingConfigNameInput = true
+                    }
+                case .failure(let error):
+                    saveError = "Failed to select file: \(error.localizedDescription)"
+                    showingSaveAlert = true
+                }
+            }
+            .alert("Enter Configuration Name", isPresented: $showingConfigNameInput) {
+                TextField("Configuration Name", text: $newConfigName)
+                Button("Upload") {
+                    uploadConfiguration()
+                }
+                Button("Cancel", role: .cancel) {
+                    selectedFileURL = nil
+                    newConfigName = ""
+                }
+            } message: {
+                Text("Enter a name for this base configuration")
+            }
+            .alert("Configuration Upload", isPresented: $showingSaveAlert) {
                 Button("OK", role: .cancel) { }
             } message: {
                 if let error = saveError {
                     Text("Error: \(error)")
                 } else {
-                    Text("Configuration has been saved successfully.")
+                    Text("Configuration has been uploaded successfully.")
                 }
             }
         }
@@ -194,6 +241,68 @@ struct ConfigurationView: View {
                 showingSaveAlert = true
             } catch {
                 saveError = error.localizedDescription
+                showingSaveAlert = true
+            }
+        }
+    }
+    
+    private func uploadConfiguration() {
+        guard let fileURL = selectedFileURL, !newConfigName.isEmpty else {
+            saveError = "Invalid file or configuration name"
+            showingSaveAlert = true
+            return
+        }
+        
+        Task {
+            do {
+                // Read file content
+                let content = try String(contentsOf: fileURL, encoding: .utf8)
+                
+                // Upload to server
+                guard let url = URL(string: "\(Config.baseURL)/api/base-configs") else {
+                    throw URLError(.badURL)
+                }
+                
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                
+                // Create multipart form data
+                let boundary = UUID().uuidString
+                request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+                
+                var body = Data()
+                
+                // Add name field
+                body.append("--\(boundary)\r\n".data(using: .utf8)!)
+                body.append("Content-Disposition: form-data; name=\"name\"\r\n\r\n".data(using: .utf8)!)
+                body.append("\(newConfigName)\r\n".data(using: .utf8)!)
+                
+                // Add file field
+                body.append("--\(boundary)\r\n".data(using: .utf8)!)
+                body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileURL.lastPathComponent)\"\r\n".data(using: .utf8)!)
+                body.append("Content-Type: text/plain\r\n\r\n".data(using: .utf8)!)
+                body.append(content.data(using: .utf8)!)
+                body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+                
+                request.httpBody = body
+                
+                let (_, response) = try await URLSession.shared.data(for: request)
+                
+                if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
+                    // Success - refresh base configs
+                    await configManager.loadBaseConfigs()
+                    saveError = nil
+                    showingSaveAlert = true
+                } else {
+                    throw URLError(.badServerResponse)
+                }
+                
+                // Clean up
+                selectedFileURL = nil
+                newConfigName = ""
+                
+            } catch {
+                saveError = "Failed to upload configuration: \(error.localizedDescription)"
                 showingSaveAlert = true
             }
         }

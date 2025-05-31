@@ -11,8 +11,10 @@ struct MonitoringView: View {
                     HStack(spacing: 16) {
                         StatusCard(
                             title: "ZTP Status",
-                            value: networkManager.ztpStatus.running ? "Running" : "Stopped",
-                            color: networkManager.ztpStatus.running ? .green : .red,
+                            value: networkManager.ztpStatus.starting ? "Starting..." : 
+                                   (networkManager.ztpStatus.running ? "Running" : "Stopped"),
+                            color: networkManager.ztpStatus.starting ? .orange :
+                                   (networkManager.ztpStatus.running ? .green : .red),
                             icon: "power"
                         )
                         
@@ -170,11 +172,9 @@ struct DeviceRow: View {
                 VStack(alignment: .leading) {
                     Text(device.hostname ?? device.ip)
                         .font(.headline)
-                    if let model = device.model {
-                        Text(model)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
+                    Text(device.ip)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
                 
                 Spacer()
@@ -225,19 +225,27 @@ struct DeviceRow: View {
                     .foregroundColor(.secondary)
             }
             
-            // Task status
+            // Task status with better labels
             if !device.tasksCompleted.isEmpty || !device.tasksFailed.isEmpty {
-                HStack {
+                HStack(spacing: 12) {
                     if !device.tasksCompleted.isEmpty {
-                        Label("\(device.tasksCompleted.count)", systemImage: "checkmark.circle.fill")
-                            .font(.caption)
-                            .foregroundColor(.green)
+                        HStack(spacing: 4) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                            Text("\(device.tasksCompleted.count) tasks completed")
+                                .font(.caption)
+                                .foregroundColor(.green)
+                        }
                     }
                     
                     if !device.tasksFailed.isEmpty {
-                        Label("\(device.tasksFailed.count)", systemImage: "xmark.circle.fill")
-                            .font(.caption)
-                            .foregroundColor(.red)
+                        HStack(spacing: 4) {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.red)
+                            Text("\(device.tasksFailed.count) tasks failed")
+                                .font(.caption)
+                                .foregroundColor(.red)
+                        }
                     }
                 }
             }
