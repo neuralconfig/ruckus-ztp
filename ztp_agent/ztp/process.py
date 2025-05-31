@@ -889,6 +889,19 @@ class ZTPProcess:
                         # Also maintain IP to MAC mapping
                         self.inventory['ip_to_mac'][neighbor_ip] = new_switch_mac
                         
+                        # Update the parent switch's neighbors to ensure bidirectional connection
+                        # This ensures the topology shows the connection correctly
+                        parent_mac = self.inventory['ip_to_mac'].get(switch_ip)
+                        if parent_mac and parent_mac in self.inventory['switches']:
+                            parent_switch_data = self.inventory['switches'][parent_mac]
+                            if 'neighbors' not in parent_switch_data:
+                                parent_switch_data['neighbors'] = {}
+                            
+                            # Ensure the neighbor entry exists and has the correct IP
+                            if port in parent_switch_data['neighbors']:
+                                parent_switch_data['neighbors'][port]['mgmt_address'] = neighbor_ip
+                                logger.info(f"Updated neighbor IP for port {port} on parent switch {switch_ip}")
+                        
                         # Disconnect from new switch
                         new_switch_op.disconnect()
                         
