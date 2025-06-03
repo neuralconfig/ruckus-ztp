@@ -1,23 +1,26 @@
-# Google Cloud Build configuration for ZTP Agent Web App
+# Google Cloud Build configuration for RUCKUS ZTP Backend
 steps:
-  # Build the container image
+  # Build the container image from root directory
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/ztp-agent-web:$COMMIT_SHA', '.']
-    dir: 'web_app'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/ruckus-ztp-backend:$COMMIT_SHA', '-f', 'web_app/Dockerfile', '.']
   
-  # Push the container image to Container Registry
+  # Tag with latest
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/ztp-agent-web:$COMMIT_SHA']
+    args: ['tag', 'gcr.io/$PROJECT_ID/ruckus-ztp-backend:$COMMIT_SHA', 'gcr.io/$PROJECT_ID/ruckus-ztp-backend:latest']
   
-  # Deploy to Cloud Run
+  # Push the container images to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '--all-tags', 'gcr.io/$PROJECT_ID/ruckus-ztp-backend']
+  
+  # Deploy to Cloud Run (Free Tier Optimized)
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
       - 'run'
       - 'deploy'
-      - 'ztp-agent-web'
+      - 'ruckus-ztp-backend'
       - '--image'
-      - 'gcr.io/$PROJECT_ID/ztp-agent-web:$COMMIT_SHA'
+      - 'gcr.io/$PROJECT_ID/ruckus-ztp-backend:$COMMIT_SHA'
       - '--region'
       - 'us-central1'
       - '--platform'
@@ -26,16 +29,25 @@ steps:
       - '--port'
       - '8080'
       - '--memory'
-      - '512Mi'
+      - '256Mi'  # Free tier limit
       - '--cpu'
-      - '1'
+      - '1'     # Free tier limit
       - '--max-instances'
-      - '10'
+      - '1'     # Limit to 1 for free tier
+      - '--min-instances'
+      - '0'     # Scale to zero when not in use
+      - '--concurrency'
+      - '80'    # Reduced for lower memory
+      - '--timeout'
+      - '300'
+      - '--cpu-throttling'  # Enable CPU throttling for free tier
       - '--set-env-vars'
-      - 'PORT=8080'
+      - 'PORT=8080,PYTHONUNBUFFERED=1'
 
 images:
-  - 'gcr.io/$PROJECT_ID/ztp-agent-web:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/ruckus-ztp-backend:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/ruckus-ztp-backend:latest'
 
 options:
   logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_8'
