@@ -1,0 +1,37 @@
+[Unit]
+Description=RUCKUS ZTP SSH Proxy
+Documentation=https://github.com/neuralconfig/ruckus-ztp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ruckus-proxy
+Group=ruckus-proxy
+WorkingDirectory=/opt/ruckus-ztp-proxy
+
+# Environment
+Environment="PYTHONPATH=/opt/ruckus-ztp-proxy"
+EnvironmentFile=-/etc/ruckus-ztp-proxy/environment
+
+# Start command
+ExecStart=/opt/ruckus-ztp-proxy/venv/bin/python -m ssh_proxy.main --config /etc/ruckus-ztp-proxy/config.ini
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/ruckus-ztp-proxy
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ruckus-ztp-proxy
+
+[Install]
+WantedBy=multi-user.target

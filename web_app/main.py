@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, Request, File, UploadFile, BackgroundTasks, WebSocket
+from fastapi import FastAPI, HTTPException, Request, File, UploadFile, BackgroundTasks, WebSocket, Header
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -20,6 +20,7 @@ import uvicorn
 # Import ZTP components
 from ztp_agent.ztp.process import ZTPProcess
 from ztp_agent.ztp.config import load_config
+from web_app.ssh_proxy_manager import proxy_manager
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -696,6 +697,50 @@ async def send_heartbeats(websocket: WebSocket):
         raise
     except Exception as e:
         logger.error(f"Heartbeat task error: {e}")
+
+@app.websocket("/ws/ssh-proxy/{proxy_id}")
+async def websocket_ssh_proxy(websocket: WebSocket, proxy_id: str, authorization: Optional[str] = Header(None)):
+    """WebSocket endpoint for SSH proxy connections."""
+    # Extract token from Authorization header
+    auth_token = ""
+    if authorization and authorization.startswith("Bearer "):
+        auth_token = authorization[7:]
+    
+    # Handle proxy connection
+    await proxy_manager.handle_proxy_connection(websocket, auth_token)
+
+@app.get("/api/ssh-proxies")
+async def get_ssh_proxies():
+    """Get list of connected SSH proxies."""
+    return proxy_manager.get_proxies()
+
+@app.get("/api/ssh-proxies/{proxy_id}")
+async def get_ssh_proxy(proxy_id: str):
+    """Get specific SSH proxy information."""
+    proxy = proxy_manager.get_proxy(proxy_id)
+    if not proxy:
+        raise HTTPException(status_code=404, detail="Proxy not found")
+    return proxy
+
+@app.post("/api/ssh-proxies/{proxy_id}/command")
+async def execute_ssh_command(proxy_id: str, command: dict):
+    """Execute SSH command through proxy."""
+    try:
+        result = await proxy_manager.execute_ssh_command(
+            proxy_id=proxy_id,
+            target_ip=command["target_ip"],
+            username=command["username"],
+            password=command["password"],
+            command=command["command"],
+            timeout=command.get("timeout", 30)
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except TimeoutError as e:
+        raise HTTPException(status_code=504, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.websocket("/ws/chat")
 async def websocket_chat(websocket: WebSocket):
