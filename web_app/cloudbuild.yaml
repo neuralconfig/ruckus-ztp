@@ -2,15 +2,11 @@
 steps:
   # Build the container image from root directory
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/ruckus-ztp-backend:$COMMIT_SHA', '-f', 'web_app/Dockerfile', '.']
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/ruckus-ztp-backend:latest', '-f', 'web_app/Dockerfile', '.']
   
-  # Tag with latest
+  # Push the container image to Container Registry
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['tag', 'gcr.io/$PROJECT_ID/ruckus-ztp-backend:$COMMIT_SHA', 'gcr.io/$PROJECT_ID/ruckus-ztp-backend:latest']
-  
-  # Push the container images to Container Registry
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', '--all-tags', 'gcr.io/$PROJECT_ID/ruckus-ztp-backend']
+    args: ['push', 'gcr.io/$PROJECT_ID/ruckus-ztp-backend:latest']
   
   # Deploy to Cloud Run (Free Tier Optimized)
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -20,7 +16,7 @@ steps:
       - 'deploy'
       - 'ruckus-ztp-backend'
       - '--image'
-      - 'gcr.io/$PROJECT_ID/ruckus-ztp-backend:$COMMIT_SHA'
+      - 'gcr.io/$PROJECT_ID/ruckus-ztp-backend:latest'
       - '--region'
       - 'us-central1'
       - '--platform'
@@ -42,10 +38,9 @@ steps:
       - '300'
       - '--cpu-throttling'  # Enable CPU throttling for free tier
       - '--set-env-vars'
-      - 'PORT=8080,PYTHONUNBUFFERED=1'
+      - 'PYTHONUNBUFFERED=1'
 
 images:
-  - 'gcr.io/$PROJECT_ID/ruckus-ztp-backend:$COMMIT_SHA'
   - 'gcr.io/$PROJECT_ID/ruckus-ztp-backend:latest'
 
 options:

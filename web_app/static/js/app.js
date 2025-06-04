@@ -8,6 +8,9 @@ let baseConfigs = {};
 let currentTab = 'config';
 let statusUpdateInterval;
 let topologyUpdateInterval;
+let availableProxies = [];
+let selectedProxyId = null;
+let proxyAuthToken = null;
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', function() {
@@ -22,6 +25,7 @@ async function initializeApp() {
     updateSeedSwitchList();
     updateBaseConfigSelect();
     populateConfigForm();
+    await refreshProxies();
     
     // Start status updates if on monitoring tab
     if (currentTab === 'monitoring') {
@@ -105,7 +109,21 @@ async function loadConfig() {
 
 async function saveConfig() {
     try {
-        // Collect form data
+        // Get proxy settings
+        const proxyEnabled = document.getElementById('ssh-proxy-enabled').checked;
+        const proxySelect = document.getElementById('proxy-select');
+        const tokenInput = document.getElementById('proxy-token');
+        
+        // Update global proxy state
+        if (proxyEnabled && proxySelect.value) {
+            selectedProxyId = proxySelect.value;
+            proxyAuthToken = tokenInput.value;
+        } else {
+            selectedProxyId = null;
+            proxyAuthToken = null;
+        }
+        
+        // Collect form data including proxy settings
         const formConfig = {
             credentials: credentials,
             preferred_password: document.getElementById('preferred-password').value,
@@ -118,6 +136,9 @@ async function saveConfig() {
             ip_pool: document.getElementById('ip-pool').value,
             gateway: document.getElementById('gateway').value,
             dns_server: document.getElementById('dns-server').value,
+            ssh_proxy_enabled: proxyEnabled,
+            ssh_proxy_id: proxyEnabled && proxySelect.value ? proxySelect.value : null,
+            ssh_proxy_token: proxyEnabled && tokenInput.value ? tokenInput.value : null,
             poll_interval: parseInt(document.getElementById('poll-interval').value)
         };
         
@@ -149,6 +170,18 @@ function populateConfigForm() {
     document.getElementById('gateway').value = config.gateway || '192.168.10.1';
     document.getElementById('dns-server').value = config.dns_server || '192.168.10.2';
     document.getElementById('poll-interval').value = config.poll_interval || 60;
+    
+    // Populate proxy settings
+    const proxyEnabled = config.ssh_proxy_enabled || false;
+    document.getElementById('ssh-proxy-enabled').checked = proxyEnabled;
+    toggleProxySettings();
+    
+    if (proxyEnabled && config.ssh_proxy_id) {
+        selectedProxyId = config.ssh_proxy_id;
+        document.getElementById('proxy-select').value = selectedProxyId;
+        document.getElementById('proxy-token').value = config.ssh_proxy_token || '';
+        updateProxyStatus();
+    }
 }
 
 // Credential Management
@@ -1565,3 +1598,79 @@ function createErrorContainer() {
     
     return container;
 }
+
+// SSH Proxy Functions
+async function refreshProxies() {
+    try {
+        const response = await fetch('/api/ssh-proxies');
+        if (response.ok) {
+            availableProxies = await response.json();
+            updateProxySelect();
+            updateProxyStatus();
+        }
+    } catch (error) {
+        console.error('Failed to fetch proxies:', error);
+    }
+}
+
+function updateProxySelect() {
+    const select = document.getElementById('proxy-select');
+    select.innerHTML = '<option value="">Select a proxy...</option>';
+    
+    availableProxies.forEach(proxy => {
+        const option = document.createElement('option');
+        option.value = proxy.proxy_id;
+        option.textContent = `${proxy.hostname} (${proxy.proxy_id}) - ${proxy.network_subnet}`;
+        if (proxy.proxy_id === selectedProxyId) {
+            option.selected = true;
+        }
+        select.appendChild(option);
+    });
+    
+    if (availableProxies.length === 0) {
+        select.innerHTML = '<option value="">No proxies connected</option>';
+    }
+}
+
+function updateProxyStatus() {
+    const statusDiv = document.getElementById('proxy-status');
+    const selectedProxy = availableProxies.find(p => p.proxy_id === selectedProxyId);
+    
+    if (!selectedProxy) {
+        statusDiv.className = 'proxy-status disconnected';
+        statusDiv.innerHTML = 'No proxy selected';
+        return;
+    }
+    
+    const statusClass = selectedProxy.status === 'online' ? 'connected' : 'disconnected';
+    statusDiv.className = `proxy-status ${statusClass}`;
+    
+    const lastSeen = new Date(selectedProxy.last_seen).toLocaleString();
+    statusDiv.innerHTML = `
+        <div>Status: <strong>${selectedProxy.status}</strong></div>
+        <div class="proxy-info">
+            <div>Host: ${selectedProxy.hostname}</div>
+            <div>Network: ${selectedProxy.network_subnet}</div>
+            <div>Last seen: ${lastSeen}</div>
+        </div>
+    `;
+}
+
+function toggleProxySettings() {
+    const enabled = document.getElementById('ssh-proxy-enabled').checked;
+    const settings = document.getElementById('proxy-settings');
+    settings.style.display = enabled ? 'block' : 'none';
+    
+    if (enabled) {
+        refreshProxies();
+    }
+}
+
+
+
+// Auto-refresh proxies every 30 seconds when on config tab with proxy enabled
+setInterval(async () => {
+    if (currentTab === 'config' && document.getElementById('ssh-proxy-enabled').checked) {
+        await refreshProxies();
+    }
+}, 30000);

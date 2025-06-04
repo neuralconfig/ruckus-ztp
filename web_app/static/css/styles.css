@@ -873,3 +873,34 @@ tr:hover {
     border-left: 3px solid var(--error);
     border-radius: 4px;
 }
+
+/* SSH Proxy Status */
+.proxy-status {
+    margin-top: 10px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--glass-bg);
+    font-size: 0.9em;
+}
+
+.proxy-status.connected {
+    border-color: var(--success);
+    color: var(--success);
+}
+
+.proxy-status.disconnected {
+    border-color: var(--error);
+    color: var(--error);
+}
+
+.proxy-status.connecting {
+    border-color: var(--warning);
+    color: var(--warning);
+}
+
+.proxy-info {
+    margin-top: 5px;
+    font-size: 0.85em;
+    color: var(--text-muted);
+}

@@ -20,7 +20,7 @@ import uvicorn
 # Import ZTP components
 from ztp_agent.ztp.process import ZTPProcess
 from ztp_agent.ztp.config import load_config
-from web_app.ssh_proxy_manager import proxy_manager
+from ssh_proxy_manager import proxy_manager
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -46,6 +46,9 @@ class ZTPConfig(BaseModel):
     ip_pool: str = "192.168.10.0/24"
     gateway: str = "192.168.10.1"
     dns_server: str = "192.168.10.2"
+    ssh_proxy_enabled: bool = False
+    ssh_proxy_id: Optional[str] = None
+    ssh_proxy_token: Optional[str] = None
     poll_interval: int = 60
 
 class ZTPStatus(BaseModel):
@@ -174,6 +177,51 @@ async def startup_event():
     load_base_configs()
     log_status("Web application started")
 
+async def execute_ssh_via_proxy(target_ip: str, username: str, password: str, command: str, timeout: int = 30) -> tuple:
+    """Execute SSH command through proxy if enabled, otherwise directly."""
+    global app_config
+    
+    # Check if proxy is enabled and configured
+    if (app_config.get('ssh_proxy_enabled', False) and 
+        app_config.get('ssh_proxy_id') and 
+        app_config.get('ssh_proxy_token')):
+        
+        proxy_id = app_config['ssh_proxy_id']
+        
+        try:
+            # Execute through proxy
+            result = await proxy_manager.execute_ssh_command(
+                proxy_id=proxy_id,
+                target_ip=target_ip,
+                username=username,
+                password=password,
+                command=command,
+                timeout=timeout
+            )
+            
+            # Return in format expected by switch operations (success, output)
+            if result.get('success', False):
+                return True, result.get('output', '')
+            else:
+                return False, result.get('error', 'SSH command failed')
+                
+        except Exception as e:
+            logger.error(f"Proxy SSH execution failed: {e}")
+            return False, f"Proxy execution error: {str(e)}"
+    else:
+        # Use direct SSH connection - import here to avoid circular import
+        from ztp_agent.network.switch import SwitchOperation
+        
+        # Create temporary switch operation for direct SSH
+        switch = SwitchOperation(target_ip, username, password)
+        
+        try:
+            with switch:
+                return switch.run_command(command)
+        except Exception as e:
+            logger.error(f"Direct SSH execution failed: {e}")
+            return False, f"Direct SSH error: {str(e)}"
+
 # Routes
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
@@ -199,6 +247,9 @@ async def get_config() -> Dict[str, Any]:
             "ip_pool": "192.168.10.0/24",
             "gateway": "192.168.10.1",
             "dns_server": "192.168.10.2",
+            "ssh_proxy_enabled": False,
+            "ssh_proxy_id": None,
+            "ssh_proxy_token": None,
             "poll_interval": 60
         }
     
@@ -389,8 +440,15 @@ async def start_ztp(background_tasks: BackgroundTasks) -> Dict[str, Any]:
             'credentials': app_config.get('credentials', [])  # Pass credentials to ZTP process
         }
         
-        # Create ZTP process
-        ztp_process = ZTPProcess(config)
+        # Create ZTP process with SSH executor if proxy is enabled
+        if (app_config.get('ssh_proxy_enabled', False) and 
+            app_config.get('ssh_proxy_id') and 
+            app_config.get('ssh_proxy_token')):
+            ztp_process = ZTPProcess(config, ssh_executor=execute_ssh_via_proxy)
+            log_status("ZTP process created with SSH proxy support")
+        else:
+            ztp_process = ZTPProcess(config)
+            log_status("ZTP process created with direct SSH connections")
         
         # Track connection errors
         connection_errors = []
@@ -525,12 +583,13 @@ async def chat_with_ai(message: ChatMessage) -> ChatResponse:
         # Get switches from ZTP process inventory
         switches = ztp_process.inventory.get('switches', {})
         
-        # Create chat interface with proper parameters
+        # Create chat interface with proxy-aware tools
         chat_interface = ChatInterface(
             openrouter_api_key=openrouter_api_key,
             model=model,
             switches=switches,
-            ztp_process=ztp_process
+            ztp_process=ztp_process,
+            ssh_executor=execute_ssh_via_proxy
         )
         
         # Get response from AI
@@ -600,12 +659,13 @@ async def chat_with_ai_stream(message: ChatMessage):
                     model = app_config.get('model', 'anthropic/claude-3-5-haiku')
                     switches = ztp_process.inventory.get('switches', {})
                     
-                    # Create chat interface
+                    # Create chat interface with proxy-aware tools
                     chat_interface = ChatInterface(
                         openrouter_api_key=openrouter_api_key,
                         model=model,
                         switches=switches,
-                        ztp_process=ztp_process
+                        ztp_process=ztp_process,
+                        ssh_executor=execute_ssh_via_proxy
                     )
                     
                     # Process with streaming callback
@@ -775,7 +835,8 @@ async def websocket_chat(websocket: WebSocket):
             openrouter_api_key=openrouter_api_key,
             model=model,
             switches=switches,
-            ztp_process=ztp_process
+            ztp_process=ztp_process,
+            ssh_executor=execute_ssh_via_proxy
         )
         
         # Define WebSocket callback with connection check
