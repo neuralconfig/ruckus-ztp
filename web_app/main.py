@@ -231,6 +231,22 @@ async def startup_event():
 
 # SSH functions removed - all SSH operations now handled by edge agents
 
+async def execute_ssh_via_edge_agent(agent_uuid: str, target_ip: str, username: str, password: str, command: str, timeout: int = 30):
+    """Execute SSH command through edge agent for AI tools."""
+    try:
+        result = await edge_agent_manager.execute_ssh_command(
+            agent_id=agent_uuid,
+            target_ip=target_ip,
+            username=username,
+            password=password,
+            command=command,
+            timeout=timeout
+        )
+        return result.get("output", "")
+    except Exception as e:
+        logger.error(f"SSH command failed via edge agent: {e}")
+        return f"Error: {str(e)}"
+
 # Routes
 @app.get("/", response_class=HTMLResponse)
 async def agent_list(request: Request):
@@ -524,39 +540,68 @@ async def get_agent_events(agent_uuid: str, limit: int = 100, session: str = Coo
     agent_events = edge_agent_manager.get_agent_events(agent_uuid, limit)
     return agent_events or []
 
-@app.post("/api/chat")
-async def chat_with_ai(message: ChatMessage) -> ChatResponse:
+@app.post("/api/{agent_uuid}/openrouter-key")
+async def save_openrouter_key(agent_uuid: str, request: dict, session: str = Cookie(None)):
+    """Save OpenRouter API key for specific agent."""
+    authenticated_agent = get_authenticated_agent(session)
+    if authenticated_agent != agent_uuid:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    api_key = request.get("api_key", "")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="API key is required")
+    
+    # Get current agent configuration
+    agent_config = edge_agent_manager.get_agent_config(agent_uuid) or {}
+    
+    # Update with new API key
+    agent_config["openrouter_api_key"] = api_key
+    
+    # Save configuration back to agent
+    await edge_agent_manager.send_agent_config(agent_uuid, agent_config)
+    
+    log_status(f"OpenRouter API key updated for agent {agent_uuid}")
+    return {"message": "OpenRouter API key saved successfully"}
+
+@app.post("/api/{agent_uuid}/chat")
+async def chat_with_ai(agent_uuid: str, message: ChatMessage, session: str = Cookie(None)) -> ChatResponse:
     """Send message to AI agent and get response."""
-    global ztp_process, app_config
+    authenticated_agent = get_authenticated_agent(session)
+    if authenticated_agent != agent_uuid:
+        raise HTTPException(status_code=401, detail="Authentication required")
     
-    if not ztp_process:
-        raise HTTPException(status_code=400, detail="ZTP process not initialized. Please start the ZTP process first.")
-    
-    if not app_config:
-        raise HTTPException(status_code=400, detail="Configuration not set. Please configure the application first.")
+    # Get agent configuration to get OpenRouter API key
+    agent_config = edge_agent_manager.get_agent_config(agent_uuid)
+    if not agent_config:
+        raise HTTPException(status_code=400, detail="Agent configuration not found")
     
     # Check if OpenRouter API key is configured
-    openrouter_api_key = app_config.get('openrouter_api_key', '')
+    openrouter_api_key = agent_config.get('openrouter_api_key', '')
     if not openrouter_api_key:
-        raise HTTPException(status_code=400, detail="OpenRouter API key not configured. Please add your API key in the Agent Configuration section.")
+        raise HTTPException(status_code=400, detail="OpenRouter API key not configured. Please add your API key in the AI Agent tab.")
     
     try:
         # Import the LangChain chat interface here to avoid circular imports
         from ztp_agent.agent.langchain_chat_interface import LangChainChatInterface as ChatInterface
         
         # Get model from config
-        model = app_config.get('model', 'anthropic/claude-3-5-haiku')
+        model = agent_config.get('model', 'anthropic/claude-3-5-haiku')
         
-        # Get switches from ZTP process inventory
-        switches = ztp_process.inventory.get('switches', {})
+        # Get switches from agent device inventory
+        devices = edge_agent_manager.get_agent_device_inventory(agent_uuid)
+        switches = {device['mac_address']: device for device in devices if device.get('device_type') == 'switch'}
+        
+        # Create a partial function for the SSH executor with agent UUID
+        def ssh_executor_for_agent(target_ip: str, username: str, password: str, command: str, timeout: int = 30):
+            return execute_ssh_via_edge_agent(agent_uuid, target_ip, username, password, command, timeout)
         
         # Create chat interface with edge agent-aware tools
         chat_interface = ChatInterface(
             openrouter_api_key=openrouter_api_key,
             model=model,
             switches=switches,
-            ztp_process=ztp_process,
-            ssh_executor=execute_ssh_via_edge_agent
+            ztp_process=None,  # Not needed for edge agent mode
+            ssh_executor=ssh_executor_for_agent
         )
         
         # Get response from AI
@@ -564,8 +609,8 @@ async def chat_with_ai(message: ChatMessage) -> ChatResponse:
             None, chat_interface.process_message, message.message
         )
         
-        log_status(f"AI Agent - User: {message.message[:50]}{'...' if len(message.message) > 50 else ''}")
-        log_status(f"AI Agent - Response: {response[:50]}{'...' if len(response) > 50 else ''}")
+        log_status(f"AI Agent ({agent_uuid}) - User: {message.message[:50]}{'...' if len(message.message) > 50 else ''}")
+        log_status(f"AI Agent ({agent_uuid}) - Response: {response[:50]}{'...' if len(response) > 50 else ''}")
         
         return ChatResponse(response=response)
         
@@ -574,18 +619,19 @@ async def chat_with_ai(message: ChatMessage) -> ChatResponse:
         log_status(error_msg, "error")
         raise HTTPException(status_code=500, detail=error_msg)
 
-@app.post("/api/chat/stream")
-async def chat_with_ai_stream(message: ChatMessage):
+@app.post("/api/{agent_uuid}/chat/stream")
+async def chat_with_ai_stream(agent_uuid: str, message: ChatMessage, session: str = Cookie(None)):
     """Send message to AI agent and get streaming response."""
-    global ztp_process, app_config
+    authenticated_agent = get_authenticated_agent(session)
+    if authenticated_agent != agent_uuid:
+        raise HTTPException(status_code=401, detail="Authentication required")
     
-    if not ztp_process:
-        raise HTTPException(status_code=400, detail="ZTP process not initialized")
+    # Get agent configuration to get OpenRouter API key
+    agent_config = edge_agent_manager.get_agent_config(agent_uuid)
+    if not agent_config:
+        raise HTTPException(status_code=400, detail="Agent configuration not found")
     
-    if not app_config:
-        raise HTTPException(status_code=400, detail="Configuration not set")
-    
-    openrouter_api_key = app_config.get('openrouter_api_key', '')
+    openrouter_api_key = agent_config.get('openrouter_api_key', '')
     if not openrouter_api_key:
         raise HTTPException(status_code=400, detail="OpenRouter API key not configured")
     
@@ -622,17 +668,24 @@ async def chat_with_ai_stream(message: ChatMessage):
             def run_agent():
                 """Run the agent in a separate thread."""
                 try:
-                    # Get model and switches
-                    model = app_config.get('model', 'anthropic/claude-3-5-haiku')
-                    switches = ztp_process.inventory.get('switches', {})
+                    # Get model from agent config
+                    model = agent_config.get('model', 'anthropic/claude-3-5-haiku')
+                    
+                    # Get switches from agent device inventory
+                    devices = edge_agent_manager.get_agent_device_inventory(agent_uuid)
+                    switches = {device['mac_address']: device for device in devices if device.get('device_type') == 'switch'}
+                    
+                    # Create a partial function for the SSH executor with agent UUID
+                    def ssh_executor_for_agent(target_ip: str, username: str, password: str, command: str, timeout: int = 30):
+                        return execute_ssh_via_edge_agent(agent_uuid, target_ip, username, password, command, timeout)
                     
                     # Create chat interface with edge agent-aware tools
                     chat_interface = ChatInterface(
                         openrouter_api_key=openrouter_api_key,
                         model=model,
                         switches=switches,
-                        ztp_process=ztp_process,
-                        ssh_executor=execute_ssh_via_edge_agent
+                        ztp_process=None,  # Not needed for edge agent mode
+                        ssh_executor=ssh_executor_for_agent
                     )
                     
                     # Process with streaming callback
@@ -870,8 +923,8 @@ async def send_agent_config(agent_id: str, config: dict):
         log_status(error_msg, "error")
         raise HTTPException(status_code=500, detail=error_msg)
 
-@app.websocket("/ws/chat")
-async def websocket_chat(websocket: WebSocket):
+@app.websocket("/ws/{agent_uuid}/chat")
+async def websocket_chat(websocket: WebSocket, agent_uuid: str):
     """WebSocket endpoint for real-time chat streaming."""
     await websocket.accept()
     
@@ -880,15 +933,13 @@ async def websocket_chat(websocket: WebSocket):
         data = await websocket.receive_json()
         message = data.get("message", "")
         
-        if not ztp_process:
-            await websocket.send_json({"type": "error", "content": "ZTP process not initialized"})
+        # Get agent configuration to get OpenRouter API key
+        agent_config = edge_agent_manager.get_agent_config(agent_uuid)
+        if not agent_config:
+            await websocket.send_json({"type": "error", "content": "Agent configuration not found"})
             return
         
-        if not app_config:
-            await websocket.send_json({"type": "error", "content": "Configuration not set"})
-            return
-        
-        openrouter_api_key = app_config.get('openrouter_api_key', '')
+        openrouter_api_key = agent_config.get('openrouter_api_key', '')
         if not openrouter_api_key:
             await websocket.send_json({"type": "error", "content": "OpenRouter API key not configured"})
             return
@@ -896,15 +947,22 @@ async def websocket_chat(websocket: WebSocket):
         # Create chat interface
         from ztp_agent.agent.langchain_chat_interface import LangChainChatInterface as ChatInterface
         
-        model = app_config.get('model', 'anthropic/claude-3-5-haiku')
-        switches = ztp_process.inventory.get('switches', {})
+        model = agent_config.get('model', 'anthropic/claude-3-5-haiku')
+        
+        # Get switches from agent device inventory
+        devices = edge_agent_manager.get_agent_device_inventory(agent_uuid)
+        switches = {device['mac_address']: device for device in devices if device.get('device_type') == 'switch'}
+        
+        # Create a partial function for the SSH executor with agent UUID
+        def ssh_executor_for_agent(target_ip: str, username: str, password: str, command: str, timeout: int = 30):
+            return execute_ssh_via_edge_agent(agent_uuid, target_ip, username, password, command, timeout)
         
         chat_interface = ChatInterface(
             openrouter_api_key=openrouter_api_key,
             model=model,
             switches=switches,
-            ztp_process=ztp_process,
-            ssh_executor=execute_ssh_via_edge_agent
+            ztp_process=None,  # Not needed for edge agent mode
+            ssh_executor=ssh_executor_for_agent
         )
         
         # Define WebSocket callback with connection check
