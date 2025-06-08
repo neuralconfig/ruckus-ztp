@@ -219,10 +219,12 @@ class DeviceInfo:
         # Fallback: run a simple command to see the prompt
         success, output = self.run_command("")  # Empty command just to see prompt
         if success:
+            logger.debug(f"Prompt detection output for {self.ip}: {repr(output)}")
             # The output might contain the prompt
             lines = output.strip().split('\n')
             if lines:
                 last_line = lines[-1]
+                logger.debug(f"Last line for prompt detection {self.ip}: {repr(last_line)}")
                 # Look for hostname pattern in the last line
                 # Handle both SSH@hostname and avoid capturing SSH@ in the hostname
                 prompt_match = re.search(r'SSH@([^#\$>\s]+)[#\$>]', last_line)
@@ -231,8 +233,10 @@ class DeviceInfo:
                     prompt_match = re.search(r'[@]([^@#\$>\s]+)[#\$>]', last_line)
                 if prompt_match:
                     hostname = prompt_match.group(1)
+                    logger.debug(f"Raw hostname from prompt for {self.ip}: {repr(hostname)}")
                     # Clean up any remaining SSH@ prefixes that might have been captured
                     if hostname.startswith('SSH@'):
+                        logger.warning(f"Found SSH@ prefix in prompt hostname for {self.ip}: {hostname}")
                         hostname = hostname[4:]  # Remove 'SSH@' prefix
                     self.hostname = hostname
                     logger.debug(f"Detected hostname {self.hostname} from command output for switch {self.ip}")

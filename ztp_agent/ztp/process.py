@@ -672,12 +672,8 @@ class ZTPProcess:
                     if serial:
                         switch['serial'] = serial
                         
-                # Generate hostname - ignore if it's a placeholder or empty
-                current_hostname = switch.get('hostname', '')
-                if current_hostname and current_hostname not in ['hostname', 'unknown', ''] and current_hostname != model:
-                    hostname = current_hostname
-                else:
-                    hostname = f"{model}-{serial}"
+                # Always generate hostname using {model}-{serial} format for consistency
+                hostname = f"{model}-{serial}"
                 
                 # Get the management VLAN for basic configuration
                 mgmt_vlan = self.mgmt_vlan
@@ -888,7 +884,7 @@ class ZTPProcess:
                         model = new_switch_op.get_model()
                         serial = new_switch_op.get_serial()
                         new_switch_mac = new_switch_op.get_chassis_mac()
-                        hostname = new_switch_op.hostname
+                        hostname = new_switch_op.get_hostname()
                         
                         # Check if we got a MAC address for the new switch
                         if not new_switch_mac:
