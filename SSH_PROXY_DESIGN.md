@@ -1,8 +1,16 @@
-# SSH Proxy Design for Raspberry Pi
+# SSH Proxy Design for Raspberry Pi (HISTORICAL)
+
+> **⚠️ ARCHIVED DESIGN DOCUMENT**
+> 
+> This document represents the historical SSH proxy design that has been superseded by the **ZTP Edge Agent** architecture. 
+> 
+> **Current Architecture**: See [EDGE_AGENT_DESIGN.md](EDGE_AGENT_DESIGN.md) for the active edge agent implementation.
+> 
+> **Migration**: The SSH proxy concept evolved into a full ZTP edge agent with local execution capabilities.
 
 ## Overview
 
-This document outlines the design for an SSH proxy application that runs on a Raspberry Pi (aarch64) to enable remote SSH access to network devices through the RUCKUS ZTP backend server. The proxy allows the web UI and iOS app to perform SSH operations on devices located on the Pi's local network without requiring inbound firewall rules.
+This document outlines the original design for an SSH proxy application that runs on a Raspberry Pi (aarch64) to enable remote SSH access to network devices through the RUCKUS ZTP backend server. This design has been implemented and then evolved into the current edge agent architecture with local ZTP execution.
 
 ## Problem Statement
 

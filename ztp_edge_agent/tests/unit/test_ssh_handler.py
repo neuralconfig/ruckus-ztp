@@ -3,7 +3,7 @@
 import unittest
 from unittest.mock import Mock, patch, MagicMock
 import asyncio
-from ssh_proxy.handlers.ssh_handler import SSHHandler
+from ztp_edge_agent.handlers.ssh_handler import SSHHandler
 
 
 class TestSSHHandler(unittest.TestCase):
@@ -18,7 +18,7 @@ class TestSSHHandler(unittest.TestCase):
         if hasattr(self.handler, '_executor'):
             self.handler._executor.shutdown(wait=False)
     
-    @patch('ssh_proxy.handlers.ssh_handler.paramiko.SSHClient')
+    @patch('ztp_edge_agent.handlers.ssh_handler.paramiko.SSHClient')
     def test_execute_ssh_command_success(self, mock_ssh_class):
         """Test successful SSH command execution."""
         # Mock SSH client
@@ -55,7 +55,7 @@ class TestSSHHandler(unittest.TestCase):
         mock_ssh.exec_command.assert_called_once_with("show version", timeout=30)
         mock_ssh.close.assert_called_once()
     
-    @patch('ssh_proxy.handlers.ssh_handler.paramiko.SSHClient')
+    @patch('ztp_edge_agent.handlers.ssh_handler.paramiko.SSHClient')
     def test_execute_ssh_command_with_stderr(self, mock_ssh_class):
         """Test SSH command with stderr output."""
         # Mock SSH client
@@ -82,7 +82,7 @@ class TestSSHHandler(unittest.TestCase):
         # Should still return stdout
         self.assertEqual(result, "Command output")
     
-    @patch('ssh_proxy.handlers.ssh_handler.paramiko.SSHClient')
+    @patch('ztp_edge_agent.handlers.ssh_handler.paramiko.SSHClient')
     def test_execute_ssh_command_connection_error(self, mock_ssh_class):
         """Test SSH connection error."""
         # Mock SSH client that fails to connect

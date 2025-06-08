@@ -3,7 +3,7 @@
 import os
 import tempfile
 import unittest
-from ssh_proxy.core.config import ProxyConfig
+from ztp_edge_agent.core.config import ProxyConfig
 
 
 class TestProxyConfig(unittest.TestCase):

@@ -37,20 +37,35 @@ class ProxyConfig:
         config = configparser.ConfigParser()
         config.read(config_path)
         
-        # Required settings
-        server_url = config.get('server', 'url')
-        auth_token = config.get('server', 'token')
+        # Required settings - handle both old and new config format
+        if config.has_section('backend'):
+            # New format
+            server_url = config.get('backend', 'server_url')
+            websocket_path = config.get('backend', 'websocket_path', fallback='/ws/ssh-proxy')
+            auth_token = config.get('proxy', 'auth_token')
+            proxy_id = config.get('proxy', 'proxy_id', fallback=None)
+            hostname = config.get('network', 'hostname', fallback=None)
+            network_subnet = config.get('network', 'subnet', fallback=None)
+        else:
+            # Old format fallback
+            server_url = config.get('server', 'url')
+            auth_token = config.get('server', 'token')
+            proxy_id = config.get('proxy', 'id', fallback=None)
+            hostname = None
+            network_subnet = None
         
         # Optional settings with defaults
         kwargs = {
             'server_url': server_url,
             'auth_token': auth_token,
-            'proxy_id': config.get('proxy', 'id', fallback=None),
-            'reconnect_interval': config.getint('proxy', 'reconnect_interval', fallback=30),
+            'proxy_id': proxy_id,
+            'hostname': hostname,
+            'network_subnet': network_subnet,
+            'reconnect_interval': config.getint('backend', 'reconnect_interval', fallback=30) if config.has_section('backend') else config.getint('proxy', 'reconnect_interval', fallback=30),
             'command_timeout': config.getint('proxy', 'command_timeout', fallback=60),
             'max_concurrent_commands': config.getint('proxy', 'max_concurrent_commands', fallback=1),
             'log_level': config.get('logging', 'level', fallback='INFO'),
-            'log_file': config.get('logging', 'file', fallback=None),
+            'log_file': config.get('logging', 'log_file', fallback=None) if config.has_section('logging') else config.get('logging', 'file', fallback=None),
         }
         
         return cls(**kwargs)

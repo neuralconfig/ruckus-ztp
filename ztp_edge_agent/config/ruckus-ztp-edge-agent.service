@@ -1,21 +1,21 @@
 [Unit]
-Description=RUCKUS ZTP SSH Proxy
+Description=RUCKUS ZTP Edge Agent
 Documentation=https://github.com/neuralconfig/ruckus-ztp
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=ruckus-proxy
-Group=ruckus-proxy
-WorkingDirectory=/opt/ruckus-ztp-proxy
+User=ruckus-edge-agent
+Group=ruckus-edge-agent
+WorkingDirectory=/opt/ruckus-ztp-edge-agent
 
 # Environment
-Environment="PYTHONPATH=/opt/ruckus-ztp-proxy"
-EnvironmentFile=-/etc/ruckus-ztp-proxy/environment
+Environment="PYTHONPATH=/opt/ruckus-ztp-edge-agent"
+EnvironmentFile=-/etc/ruckus-ztp-edge-agent/environment
 
 # Start command
-ExecStart=/opt/ruckus-ztp-proxy/venv/bin/python -m ssh_proxy.main --config /etc/ruckus-ztp-proxy/config.ini
+ExecStart=/opt/ruckus-ztp-edge-agent/venv/bin/python3 main.py
 
 # Restart policy
 Restart=always
@@ -26,12 +26,12 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/log/ruckus-ztp-proxy
+ReadWritePaths=/var/log/ruckus-ztp-edge-agent
 
 # Logging
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=ruckus-ztp-proxy
+SyslogIdentifier=ruckus-ztp-edge-agent
 
 [Install]
 WantedBy=multi-user.target

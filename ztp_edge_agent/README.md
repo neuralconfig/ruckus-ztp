@@ -1,6 +1,6 @@
-# RUCKUS ZTP SSH Proxy
+# RUCKUS ZTP ZTP Edge Agent
 
-The SSH Proxy enables remote SSH access to network devices through the RUCKUS ZTP backend server. It creates an outbound WebSocket connection to the backend, eliminating the need for inbound firewall rules.
+The ZTP Edge Agent enables remote SSH access to network devices through the RUCKUS ZTP backend server. It creates an outbound WebSocket connection to the backend, eliminating the need for inbound firewall rules.
 
 ## Features
 
@@ -27,16 +27,16 @@ git clone https://github.com/neuralconfig/ruckus-ztp.git
 cd ruckus-ztp
 
 # Run the installer (as root)
-sudo ./ssh_proxy/install.sh
+sudo ./ztp_edge_agent/install.sh
 ```
 
 ### 2. Configuration
 
-Edit `/etc/ruckus-ztp-proxy/config.ini`:
+Edit `/etc/ruckus-ztp-edge-agent/config.ini`:
 
 ```ini
 [server]
-url = wss://your-backend-server.com/ws/ssh-proxy
+url = wss://your-backend-server.com/ws/edge-agent
 token = your-secure-token-here
 
 [proxy]
@@ -45,23 +45,23 @@ command_timeout = 60
 
 [logging]
 level = INFO
-file = /var/log/ruckus-ztp-proxy/proxy.log
+file = /var/log/ruckus-ztp-edge-agent/proxy.log
 ```
 
 ### 3. Start the Service
 
 ```bash
 # Start the service
-sudo systemctl start ruckus-ztp-proxy
+sudo systemctl start ruckus-ztp-edge-agent
 
 # Enable auto-start on boot
-sudo systemctl enable ruckus-ztp-proxy
+sudo systemctl enable ruckus-ztp-edge-agent
 
 # Check status
-sudo systemctl status ruckus-ztp-proxy
+sudo systemctl status ruckus-ztp-edge-agent
 
 # View logs
-sudo journalctl -u ruckus-ztp-proxy -f
+sudo journalctl -u ruckus-ztp-edge-agent -f
 ```
 
 ## Manual Installation
@@ -70,28 +70,28 @@ If you prefer manual installation:
 
 ```bash
 # Create directories
-sudo mkdir -p /opt/ruckus-ztp-proxy
-sudo mkdir -p /etc/ruckus-ztp-proxy
-sudo mkdir -p /var/log/ruckus-ztp-proxy
+sudo mkdir -p /opt/ruckus-ztp-edge-agent
+sudo mkdir -p /etc/ruckus-ztp-edge-agent
+sudo mkdir -p /var/log/ruckus-ztp-edge-agent
 
 # Create user
-sudo useradd -r -s /bin/false ruckus-proxy
+sudo useradd -r -s /bin/false ruckus-edge-agent
 
 # Copy files
-sudo cp -r ssh_proxy/* /opt/ruckus-ztp-proxy/
-sudo cp ssh_proxy/config/config.ini.example /etc/ruckus-ztp-proxy/config.ini
+sudo cp -r ztp_edge_agent/* /opt/ruckus-ztp-edge-agent/
+sudo cp ztp_edge_agent/config/config.ini.example /etc/ruckus-ztp-edge-agent/config.ini
 
 # Install Python dependencies
-cd /opt/ruckus-ztp-proxy
+cd /opt/ruckus-ztp-edge-agent
 sudo python3 -m venv venv
 sudo ./venv/bin/pip install websockets paramiko
 
 # Set permissions
-sudo chown -R ruckus-proxy:ruckus-proxy /opt/ruckus-ztp-proxy
-sudo chown -R ruckus-proxy:ruckus-proxy /var/log/ruckus-ztp-proxy
+sudo chown -R ruckus-edge-agent:ruckus-edge-agent /opt/ruckus-ztp-edge-agent
+sudo chown -R ruckus-edge-agent:ruckus-edge-agent /var/log/ruckus-ztp-edge-agent
 
 # Install systemd service
-sudo cp ssh_proxy/config/ruckus-ztp-proxy.service /etc/systemd/system/
+sudo cp ztp_edge_agent/config/ruckus-ztp-edge-agent.service /etc/systemd/system/
 sudo systemctl daemon-reload
 ```
 
@@ -101,21 +101,21 @@ For testing or debugging, you can run the proxy manually:
 
 ```bash
 # Basic usage with config file
-python -m ssh_proxy.main --config /etc/ruckus-ztp-proxy/config.ini
+python -m ztp_edge_agent.main --config /etc/ruckus-ztp-edge-agent/config.ini
 
 # Override config with command line options
-python -m ssh_proxy.main \
-    --server wss://backend.example.com/ws/ssh-proxy \
+python -m ztp_edge_agent.main \
+    --server wss://backend.example.com/ws/edge-agent \
     --token your-token \
     --debug
 
 # All options
-python -m ssh_proxy.main --help
+python -m ztp_edge_agent.main --help
 ```
 
 ## Architecture
 
-The SSH Proxy follows a simple architecture:
+The ZTP Edge Agent follows a simple architecture:
 
 1. **WebSocket Client**: Maintains persistent connection to backend
 2. **SSH Handler**: Executes commands using paramiko
@@ -124,7 +124,7 @@ The SSH Proxy follows a simple architecture:
 ### Message Flow
 
 ```
-Backend Server → WebSocket → SSH Proxy → SSH → Network Device
+Backend Server → WebSocket → ZTP Edge Agent → SSH → Network Device
                      ↑                             ↓
                      └─────── Response ────────────┘
 ```
@@ -142,10 +142,10 @@ Backend Server → WebSocket → SSH Proxy → SSH → Network Device
 
 ```bash
 # Check service status
-sudo systemctl status ruckus-ztp-proxy
+sudo systemctl status ruckus-ztp-edge-agent
 
 # View detailed logs
-sudo journalctl -u ruckus-ztp-proxy -n 100
+sudo journalctl -u ruckus-ztp-edge-agent -n 100
 
 # Test connectivity to backend
 curl -I https://your-backend-server.com
@@ -156,7 +156,7 @@ curl -i -N \
   -H "Upgrade: websocket" \
   -H "Sec-WebSocket-Key: x3JJHMbDL1EzLkh9GBhXDw==" \
   -H "Sec-WebSocket-Version: 13" \
-  https://your-backend-server.com/ws/ssh-proxy/test
+  https://your-backend-server.com/ws/edge-agent/test
 ```
 
 ### SSH Issues
@@ -182,7 +182,7 @@ Run with debug logging for detailed output:
 level = DEBUG
 
 # Or command line
-python -m ssh_proxy.main --debug
+python -m ztp_edge_agent.main --debug
 ```
 
 ## API Integration
@@ -216,16 +216,16 @@ POST /api/ssh-proxies/{proxy_id}/command
 pip install -r requirements-dev.txt
 
 # Run unit tests
-pytest ssh_proxy/tests/unit/
+pytest ztp_edge_agent/tests/unit/
 
 # Run with coverage
-pytest --cov=ssh_proxy ssh_proxy/tests/
+pytest --cov=ztp_edge_agent ztp_edge_agent/tests/
 ```
 
 ### Project Structure
 
 ```
-ssh_proxy/
+ztp_edge_agent/
 ├── __init__.py
 ├── main.py              # Entry point
 ├── core/
@@ -238,7 +238,7 @@ ssh_proxy/
 │   └── logger.py        # Logging utilities
 ├── config/
 │   ├── config.ini.example
-│   └── ruckus-ztp-proxy.service
+│   └── ruckus-ztp-edge-agent.service
 └── tests/
     ├── unit/
     └── integration/

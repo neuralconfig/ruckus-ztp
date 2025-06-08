@@ -8,10 +8,10 @@ import socket
 import uuid
 from typing import Optional, Dict, Any
 
-from ssh_proxy.core.config import ProxyConfig
-from ssh_proxy.core.websocket_client import WebSocketClient
-from ssh_proxy.handlers.ssh_handler import SSHHandler
-from ssh_proxy.utils.logger import setup_logging
+from ztp_edge_agent.core.config import ProxyConfig
+from ztp_edge_agent.core.websocket_client import WebSocketClient
+from ztp_edge_agent.handlers.ssh_handler import SSHHandler
+from ztp_edge_agent.utils.logger import setup_logging
 
 
 class SSHProxy:
@@ -29,9 +29,12 @@ class SSHProxy:
         # Get network information
         self._get_network_info()
         
+        # Build WebSocket URL
+        ws_url = self._build_websocket_url(config.server_url, config.proxy_id)
+        
         # Initialize components
         self.websocket_client = WebSocketClient(
-            server_url=config.server_url,
+            server_url=ws_url,
             auth_token=config.auth_token,
             on_message=self._handle_message,
             on_connect=self._on_connect,
@@ -45,6 +48,22 @@ class SSHProxy:
         
         self._running = False
         self._tasks = set()
+    
+    def _build_websocket_url(self, server_url: str, proxy_id: str) -> str:
+        """Build WebSocket URL from server URL and proxy ID."""
+        # Convert HTTP(S) to WS(S)
+        if server_url.startswith('https://'):
+            ws_url = server_url.replace('https://', 'wss://')
+        elif server_url.startswith('http://'):
+            ws_url = server_url.replace('http://', 'ws://')
+        else:
+            # Assume https by default
+            ws_url = f"wss://{server_url}"
+        
+        # Add WebSocket path and proxy ID
+        ws_url += f"/ws/ssh-proxy/{proxy_id}"
+        
+        return ws_url
     
     def _get_network_info(self):
         """Get local network information."""

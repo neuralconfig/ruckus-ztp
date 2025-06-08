@@ -42,4 +42,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
   CMD python -c "import requests; requests.get('http://localhost:8080/api/status')" || exit 1
 
 # Command to run the application
-CMD ["python", "-m", "uvicorn", "web_app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["python", "/app/web_app/main.py"]

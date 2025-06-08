@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import Mock, patch, AsyncMock, MagicMock
 import asyncio
 import json
-from ssh_proxy.core.websocket_client import WebSocketClient
+from ztp_edge_agent.core.websocket_client import WebSocketClient
 
 
 class TestWebSocketClient(unittest.TestCase):
@@ -25,7 +25,7 @@ class TestWebSocketClient(unittest.TestCase):
             reconnect_interval=1
         )
     
-    @patch('ssh_proxy.core.websocket_client.websockets.connect')
+    @patch('ztp_edge_agent.core.websocket_client.websockets.connect')
     def test_connect_success(self, mock_connect):
         """Test successful WebSocket connection."""
         async def run_test():
@@ -76,7 +76,7 @@ class TestWebSocketClient(unittest.TestCase):
         
         asyncio.run(run_test())
     
-    @patch('ssh_proxy.core.websocket_client.websockets.connect')
+    @patch('ztp_edge_agent.core.websocket_client.websockets.connect')
     def test_receive_loop(self, mock_connect):
         """Test message receive loop."""
         async def run_test():
@@ -105,7 +105,7 @@ class TestWebSocketClient(unittest.TestCase):
         
         asyncio.run(run_test())
     
-    @patch('ssh_proxy.core.websocket_client.websockets.connect')
+    @patch('ztp_edge_agent.core.websocket_client.websockets.connect')
     def test_send_loop(self, mock_connect):
         """Test message send loop."""
         async def run_test():

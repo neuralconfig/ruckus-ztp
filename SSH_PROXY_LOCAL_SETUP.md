@@ -1,6 +1,14 @@
-# SSH Proxy Local Deployment Guide
+# SSH Proxy Local Deployment Guide (ARCHIVED)
 
-This guide covers deploying the SSH proxy on your Linux server to connect with the Cloud Run backend.
+> **⚠️ ARCHIVED DEPLOYMENT GUIDE**
+> 
+> This guide is for the historical SSH proxy architecture that has been replaced by the **ZTP Edge Agent** system.
+> 
+> **Current Deployment**: See [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) for edge agent installation instructions.
+> 
+> **Migration**: Users should install the new edge agent instead of following this guide.
+
+This guide covers the historical deployment of the SSH proxy on your Linux server to connect with the Cloud Run backend.
 
 ## Prerequisites
 

@@ -95,6 +95,26 @@ class SwitchDiscovery:
                         neighbors[current_port]['type'] = 'ap'
                     else:
                         neighbors[current_port]['type'] = 'unknown'
+                
+                # Extract model for APs from system description
+                # Format: "Ruckus R350 Multimedia Hotzone Wireless AP/SW Version: 7.1.0.510.1041"
+                # We want to extract "R350" (2nd word)
+                if (neighbors[current_port].get('type') == 'ap' or 
+                    neighbors[current_port].get('type') == 'unknown' and 'AP' in system_desc):
+                    
+                    # Split system description and try to extract model (2nd word)
+                    desc_parts = system_desc.split()
+                    if len(desc_parts) >= 2 and desc_parts[0].lower() == 'ruckus':
+                        # Extract model from 2nd position (e.g., "R350", "R750", etc.)
+                        model = desc_parts[1]
+                        neighbors[current_port]['model'] = model
+                        logger.debug(f"Extracted AP model '{model}' from system description: {system_desc}")
+                        # Update type to ap if it wasn't set
+                        if neighbors[current_port].get('type') == 'unknown':
+                            neighbors[current_port]['type'] = 'ap'
+                    else:
+                        logger.warning(f"Could not extract AP model from system description: {system_desc}")
+                
                 continue
                 
             # Check for port description

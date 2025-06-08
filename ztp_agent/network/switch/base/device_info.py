@@ -187,7 +187,11 @@ class DeviceInfo:
             # Example: "hostname ICX8200-C08PF-POE-FNS4352T0D4"
             hostname_match = re.search(r'hostname\s+(\S+)', output, re.IGNORECASE)
             if hostname_match:
-                self.hostname = hostname_match.group(1)
+                hostname = hostname_match.group(1)
+                # Clean up any SSH@ prefix that might be in the configured hostname
+                if hostname.startswith('SSH@'):
+                    hostname = hostname[4:]  # Remove 'SSH@' prefix
+                self.hostname = hostname
                 logger.debug(f"Detected hostname {self.hostname} from config for switch {self.ip}")
                 return self.hostname
         
@@ -198,9 +202,17 @@ class DeviceInfo:
             prompt = self.connection.prompt
             if prompt:
                 # Extract hostname from prompt like "SSH@ICX8200-C08PF-POE-FNS4352T0D4#"
-                prompt_match = re.search(r'[@]([^#\$>\s]+)[#\$>]', prompt)
+                # Handle both SSH@hostname and avoid capturing SSH@ in the hostname
+                prompt_match = re.search(r'SSH@([^#\$>\s]+)[#\$>]', prompt)
+                if not prompt_match:
+                    # Fallback for other prompt formats
+                    prompt_match = re.search(r'[@]([^@#\$>\s]+)[#\$>]', prompt)
                 if prompt_match:
-                    self.hostname = prompt_match.group(1)
+                    hostname = prompt_match.group(1)
+                    # Clean up any remaining SSH@ prefixes that might have been captured
+                    if hostname.startswith('SSH@'):
+                        hostname = hostname[4:]  # Remove 'SSH@' prefix
+                    self.hostname = hostname
                     logger.debug(f"Detected hostname {self.hostname} from current prompt for switch {self.ip}")
                     return self.hostname
         
@@ -212,9 +224,17 @@ class DeviceInfo:
             if lines:
                 last_line = lines[-1]
                 # Look for hostname pattern in the last line
-                prompt_match = re.search(r'[@]([^#\$>\s]+)[#\$>]', last_line)
+                # Handle both SSH@hostname and avoid capturing SSH@ in the hostname
+                prompt_match = re.search(r'SSH@([^#\$>\s]+)[#\$>]', last_line)
+                if not prompt_match:
+                    # Fallback for other prompt formats
+                    prompt_match = re.search(r'[@]([^@#\$>\s]+)[#\$>]', last_line)
                 if prompt_match:
-                    self.hostname = prompt_match.group(1)
+                    hostname = prompt_match.group(1)
+                    # Clean up any remaining SSH@ prefixes that might have been captured
+                    if hostname.startswith('SSH@'):
+                        hostname = hostname[4:]  # Remove 'SSH@' prefix
+                    self.hostname = hostname
                     logger.debug(f"Detected hostname {self.hostname} from command output for switch {self.ip}")
                     return self.hostname
         

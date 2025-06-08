@@ -123,10 +123,13 @@ class BaseConnection:
             if ("Enter new password:" in initial_output or 
                 "New password:" in initial_output or
                 "Enter the new password" in initial_output):
+                logger.info(f"First-time login detected for {self.ip}, changing password from default to preferred")
                 updated_output = self._handle_first_time_login(initial_output)
                 if updated_output is False:
+                    logger.error(f"Failed to handle first-time login for {self.ip}")
                     return False
                 else:
+                    logger.info(f"Successfully handled first-time login for {self.ip}")
                     initial_output = updated_output  # Use updated output for prompt check
             
             # Check if we're in exec mode (prompt ends with '>')

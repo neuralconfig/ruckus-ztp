@@ -505,6 +505,10 @@ class ZTPProcess:
                         # Get the model and hostname if available
                         system_name = neighbor.get('system_name', '').strip('"')
                         
+                        # Use extracted model from LLDP system description if available, otherwise fallback to system_name
+                        ap_model = neighbor.get('model') or system_name or 'Unknown AP'
+                        logger.debug(f"AP {ap_mac} model determination: neighbor.model='{neighbor.get('model')}', system_name='{system_name}', final_model='{ap_model}'")
+                        
                         # Add to APs inventory if we have a valid MAC
                         if ap_mac:
                             # Check if AP already exists by MAC
@@ -512,17 +516,20 @@ class ZTPProcess:
                                 existing_ap = self.inventory['aps'][ap_mac]
                                 logger.info(f"AP {system_name} already in inventory with MAC {ap_mac}, updating IP from {existing_ap.get('ip')} to {ip_addr}")
                                 existing_ap['ip'] = ip_addr
+                                # Update model if we have a better one from LLDP
+                                if neighbor.get('model'):
+                                    existing_ap['model'] = neighbor.get('model')
                                 if ip_addr and ip_addr not in ['Unknown IP', '0.0.0.0']:
                                     self.inventory['ip_to_mac'][ip_addr] = ap_mac
                             else:
-                                logger.info(f"Adding discovered AP {ap_mac} to inventory")
+                                logger.info(f"Adding discovered AP {ap_mac} to inventory with model {ap_model}")
                                 
                                 self.inventory['aps'][ap_mac] = {
                                     'mac': ap_mac,
                                     'ip': ip_addr,
-                                    'model': system_name or 'Unknown AP',
+                                    'model': ap_model,
                                     'hostname': system_name or f"ap-{ap_mac.replace(':', '-')}",
-                                    'status': 'Discovered',
+                                    'status': 'discovered',
                                     'switch_ip': ip,
                                     'switch_port': port,
                                     'ssh_active': False  # Track SSH activity
@@ -726,6 +733,9 @@ class ZTPProcess:
                     mgmt_ip=mgmt_ip,
                     mgmt_mask=mgmt_mask
                 )
+                
+                # Note: Password change is handled during first-time login connection
+                # RUCKUS ICX switches automatically save the new password during first login
                 
                 self._set_device_configuring(ip, False)
                 
@@ -1071,11 +1081,19 @@ class ZTPProcess:
                 # Add the AP to our inventory if we have a MAC
                 if chassis_id:
                     ap_mac = chassis_id.lower()  # Normalize MAC
+                    
+                    # Get existing model from discovery if available
+                    existing_model = None
+                    if ap_mac in self.inventory['aps']:
+                        existing_model = self.inventory['aps'][ap_mac].get('model')
+                    
                     self.inventory['aps'][ap_mac] = {
                         'mac': ap_mac,
                         'ip': ap_ip or 'Unknown IP',
-                        'system_name': system_name,
-                        'status': 'Configured',
+                        'model': existing_model or 'Unknown AP',  # Preserve the model from discovery
+                        'hostname': system_name,
+                        'status': 'configured',
+                        'configured': True,  # Add boolean configured field
                         'switch_ip': switch_ip,
                         'switch_port': port,
                         'ssh_active': False
@@ -1083,7 +1101,7 @@ class ZTPProcess:
                     # Also maintain IP to MAC mapping if we have a valid IP
                     if ap_ip and ap_ip not in ['0.0.0.0', 'Unknown IP']:
                         self.inventory['ip_to_mac'][ap_ip] = ap_mac
-                    logger.info(f"Added AP {system_name} (MAC: {ap_mac}, IP: {ap_ip}) to inventory")
+                    logger.info(f"Added AP {system_name} (MAC: {ap_mac}, IP: {ap_ip}) to inventory with model {existing_model or 'Unknown AP'}")
             else:
                 logger.error(f"Failed to connect to switch {switch_ip} for AP port configuration with any available credentials")
         

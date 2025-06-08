@@ -88,3 +88,6 @@ config/ztp_agent.ini
 *.xcuserstate
 xcuserdata/
 *.xcworkspace/xcuserdata/
+
+# Log files
+*.log
