@@ -183,6 +183,10 @@ class ZTPEdgeAgentManager:
                     await self._handle_status_update(agent_connection, message)
                 elif msg_type == "ztp_event":
                     await self._handle_ztp_event(agent_connection, message)
+                elif msg_type == "ztp_start_response":
+                    await self._handle_ztp_start_response(agent_connection, message)
+                elif msg_type == "ztp_stop_response":
+                    await self._handle_ztp_stop_response(agent_connection, message)
                 elif msg_type == "pong":
                     self.logger.debug(f"Pong from {agent_connection.agent_id}")
                 else:
@@ -314,6 +318,54 @@ class ZTPEdgeAgentManager:
             self.logger.debug(f"Updated full inventory for agent {agent_connection.agent_id}: {len(switches)} switches, {len(aps)} APs")
         
         self.logger.info(f"ZTP Event from {agent_connection.agent_id}: {event_type} - {event_data}")
+    
+    async def _handle_ztp_start_response(self, agent_connection: EdgeAgentConnection, message: dict):
+        """Handle ZTP start response from agent.
+        
+        Args:
+            agent_connection: Edge agent connection
+            message: ZTP start response message
+        """
+        success = message.get("success", False)
+        response_message = message.get("message", "")
+        
+        if success:
+            # Immediately update ZTP status to running
+            agent_connection.ztp_status.update({
+                "running": True,
+                "starting": False,
+                "last_start": datetime.utcnow().isoformat()
+            })
+            self.logger.info(f"ZTP started successfully on agent {agent_connection.agent_id}: {response_message}")
+        else:
+            # Update status to indicate start failed
+            agent_connection.ztp_status.update({
+                "running": False,
+                "starting": False,
+                "last_error": response_message
+            })
+            self.logger.error(f"ZTP start failed on agent {agent_connection.agent_id}: {response_message}")
+    
+    async def _handle_ztp_stop_response(self, agent_connection: EdgeAgentConnection, message: dict):
+        """Handle ZTP stop response from agent.
+        
+        Args:
+            agent_connection: Edge agent connection
+            message: ZTP stop response message
+        """
+        success = message.get("success", False)
+        response_message = message.get("message", "")
+        
+        if success:
+            # Immediately update ZTP status to stopped
+            agent_connection.ztp_status.update({
+                "running": False,
+                "starting": False,
+                "last_stop": datetime.utcnow().isoformat()
+            })
+            self.logger.info(f"ZTP stopped successfully on agent {agent_connection.agent_id}: {response_message}")
+        else:
+            self.logger.error(f"ZTP stop failed on agent {agent_connection.agent_id}: {response_message}")
     
     def _check_rate_limit(self, agent_id: str) -> bool:
         """Check if agent is within rate limits."""

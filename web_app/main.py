@@ -484,12 +484,20 @@ async def start_agent_ztp(agent_uuid: str, session: str = Cookie(None)) -> Dict[
         raise HTTPException(status_code=400, detail="Agent configuration not set")
     
     try:
+        # Immediately set status to "starting"
+        agent = edge_agent_manager.get_agent(agent_uuid)
+        if agent:
+            agent.ztp_status.update({
+                "starting": True,
+                "running": False
+            })
+        
         # Send start ZTP command to edge agent
         await edge_agent_manager.send_ztp_command(agent_uuid, "start", agent_config)
         
-        log_status(f"ZTP started on edge agent {agent_uuid}")
+        log_status(f"ZTP start command sent to edge agent {agent_uuid}")
         return {
-            "message": "ZTP process started on edge agent",
+            "message": "ZTP process starting on edge agent",
             "errors": [],
             "success": True
         }
