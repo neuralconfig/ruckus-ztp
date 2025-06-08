@@ -503,6 +503,17 @@ class ZTPEdgeAgentManager:
         agent = self._agents.get(agent_id)
         return agent.to_dict() if agent else None
     
+    def get_agent_connection(self, agent_id: str) -> Optional[EdgeAgentConnection]:
+        """Get the actual agent connection object.
+        
+        Args:
+            agent_id: Edge agent ID
+            
+        Returns:
+            EdgeAgentConnection object or None if not found
+        """
+        return self._agents.get(agent_id)
+    
     async def disconnect_agent(self, agent_id: str):
         """Disconnect an edge agent.
         

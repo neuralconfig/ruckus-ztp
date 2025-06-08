@@ -485,8 +485,11 @@ async def start_agent_ztp(agent_uuid: str, session: str = Cookie(None)) -> Dict[
     
     try:
         # Immediately set status to "starting"
-        agent = edge_agent_manager.get_agent(agent_uuid)
+        agent = edge_agent_manager.get_agent_connection(agent_uuid)
         if agent:
+            # Ensure ztp_status is a dict before updating
+            if not hasattr(agent, 'ztp_status') or agent.ztp_status is None:
+                agent.ztp_status = {}
             agent.ztp_status.update({
                 "starting": True,
                 "running": False
