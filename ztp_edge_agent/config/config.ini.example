@@ -1,0 +1,25 @@
+# RUCKUS ZTP Edge Agent Configuration
+
+[agent]
+agent_id = REPLACE_WITH_AGENT_ID
+auth_token = REPLACE_WITH_GENERATED_TOKEN
+command_timeout = 60
+
+[network]
+hostname = REPLACE_WITH_HOSTNAME
+subnet = 192.168.1.0/24
+
+[backend]
+server_url = https://ruckusztp.neuralconfig.com
+websocket_path = /ws/edge-agent
+reconnect_interval = 30
+
+[logging]
+level = DEBUG
+log_file = /var/log/ruckus-ztp-edge-agent/agent.log
+
+[ztp]
+# ZTP process configuration (optional - will use defaults if not specified)
+# config_file = /etc/ruckus-ztp-edge-agent/ztp_config.ini
+# enable_ztp = true
+# poll_interval = 30

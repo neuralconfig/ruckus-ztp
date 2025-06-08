@@ -6,20 +6,21 @@ import os
 import json
 import asyncio
 import logging
+import hashlib
+import secrets
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, Request, File, UploadFile, BackgroundTasks, WebSocket
+from fastapi import FastAPI, HTTPException, Request, File, UploadFile, WebSocket, Header, Form, Cookie
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel, validator
 import uvicorn
 
-# Import ZTP components
-from ztp_agent.ztp.process import ZTPProcess
-from ztp_agent.ztp.config import load_config
+# Import edge agent manager
+from ztp_edge_agent_manager import edge_agent_manager
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -45,7 +46,10 @@ class ZTPConfig(BaseModel):
     ip_pool: str = "192.168.10.0/24"
     gateway: str = "192.168.10.1"
     dns_server: str = "192.168.10.2"
-    poll_interval: int = 60
+    edge_agent_enabled: bool = False
+    edge_agent_id: Optional[str] = None
+    edge_agent_token: Optional[str] = None
+    poll_interval: int = 300
 
 class ZTPStatus(BaseModel):
     running: bool
@@ -78,16 +82,20 @@ class DeviceInfo(BaseModel):
     connected_switch: Optional[str] = None  # For APs: switch they're connected to
     connected_port: Optional[str] = None    # For APs: port they're connected to
     ssh_active: bool = False  # Whether currently being accessed via SSH
+    base_config_applied: bool = False  # For switches: whether base configuration has been applied
+    configured: bool = False  # For all devices: whether configuration is complete
 
 # FastAPI app
 app = FastAPI(title="RUCKUS ZTP Agent Web Interface", version="1.0.0")
 
-# Global state
-ztp_process: Optional[ZTPProcess] = None
+# Global state  
 app_config: Dict[str, Any] = {}
 base_configs: Dict[str, str] = {}
 status_log: List[Dict[str, Any]] = []
-ztp_starting: bool = False  # Track if ZTP is being started
+
+# Agent authentication
+agent_passwords: Dict[str, str] = {}  # agent_uuid -> password_hash
+agent_sessions: Dict[str, str] = {}   # session_id -> agent_uuid
 
 # Static files and templates
 web_app_dir = Path(__file__).parent
@@ -104,11 +112,19 @@ def load_base_configs():
     global base_configs
     config_dir = Path(__file__).parent.parent / "config"
     
+    print(f"Loading base configs from: {config_dir}")
+    
     # Load default base configuration
     default_config_path = config_dir / "base_configuration.txt"
+    print(f"Looking for default config at: {default_config_path}")
+    
     if default_config_path.exists():
         with open(default_config_path, 'r') as f:
-            base_configs["Default RUCKUS Configuration"] = f.read()
+            content = f.read()
+            base_configs["Default RUCKUS Configuration"] = content
+            print(f"Loaded default config with {len(content)} characters")
+    else:
+        print("Default config file not found!")
     
     # Look for other .txt files in config directory
     for config_file in config_dir.glob("*.txt"):
@@ -116,6 +132,10 @@ def load_base_configs():
             config_name = config_file.stem.replace("_", " ").title()
             with open(config_file, 'r') as f:
                 base_configs[config_name] = f.read()
+                print(f"Loaded additional config: {config_name}")
+    
+    print(f"Total base configs loaded: {len(base_configs)}")
+    print(f"Available configs: {list(base_configs.keys())}")
 
 def log_status(message: str, level: str = "info"):
     """Add a status message to the log."""
@@ -136,6 +156,41 @@ def log_status(message: str, level: str = "info"):
         logger.warning(message)
     else:
         logger.info(message)
+
+def hash_password(password: str) -> str:
+    """Hash a password using SHA-256."""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_password(password: str, hashed: str) -> bool:
+    """Verify a password against its hash."""
+    return hash_password(password) == hashed
+
+def create_session(agent_uuid: str) -> str:
+    """Create a session for an agent and return session ID."""
+    session_id = secrets.token_urlsafe(32)
+    agent_sessions[session_id] = agent_uuid
+    return session_id
+
+def get_session_agent(session_id: str) -> Optional[str]:
+    """Get agent UUID from session ID."""
+    return agent_sessions.get(session_id)
+
+def register_agent_password(agent_uuid: str, password: str):
+    """Register agent password hash."""
+    agent_passwords[agent_uuid] = hash_password(password)
+    log_status(f"Agent {agent_uuid} registered with password")
+
+def verify_agent_auth(agent_uuid: str, password: str) -> bool:
+    """Verify agent authentication."""
+    if agent_uuid not in agent_passwords:
+        return False
+    return verify_password(password, agent_passwords[agent_uuid])
+
+def get_authenticated_agent(session: Optional[str] = None) -> Optional[str]:
+    """Get authenticated agent UUID from session cookie."""
+    if not session:
+        return None
+    return get_session_agent(session)
 
 class WebLogHandler(logging.Handler):
     """Custom logging handler to forward logs to web interface."""
@@ -171,22 +226,77 @@ async def startup_event():
     ztp_logger.setLevel(logging.DEBUG)
     
     load_base_configs()
+    
     log_status("Web application started")
+
+# SSH functions removed - all SSH operations now handled by edge agents
 
 # Routes
 @app.get("/", response_class=HTMLResponse)
-async def root(request: Request):
-    """Serve the main page."""
-    return templates.TemplateResponse("index.html", {"request": request})
+async def agent_list(request: Request):
+    """Show list of connected agents."""
+    agents = edge_agent_manager.get_agents()
+    return templates.TemplateResponse("agent_list.html", {
+        "request": request, 
+        "agents": agents
+    })
 
-@app.get("/api/config")
-async def get_config() -> Dict[str, Any]:
-    """Get current configuration."""
-    global app_config
+@app.get("/{agent_uuid}", response_class=HTMLResponse)
+async def agent_dashboard(request: Request, agent_uuid: str, session: str = Cookie(None)):
+    """Show agent dashboard or login prompt."""
+    # Check if agent exists
+    agent = edge_agent_manager.get_agent(agent_uuid)
+    if not agent:
+        return templates.TemplateResponse("agent_not_found.html", {
+            "request": request,
+            "agent_uuid": agent_uuid
+        })
     
-    # Provide defaults if config is empty
-    if not app_config:
-        app_config = {
+    # Check authentication
+    if session and get_session_agent(session) == agent_uuid:
+        # User is authenticated for this agent
+        return templates.TemplateResponse("index.html", {
+            "request": request,
+            "agent_uuid": agent_uuid,
+            "agent": agent
+        })
+    else:
+        # Show login prompt
+        return templates.TemplateResponse("agent_login.html", {
+            "request": request,
+            "agent_uuid": agent_uuid,
+            "agent": agent
+        })
+
+@app.post("/{agent_uuid}/auth")
+async def authenticate_agent(request: Request, agent_uuid: str, password: str = Form(...)):
+    """Authenticate user for agent access."""
+    if verify_agent_auth(agent_uuid, password):
+        session_id = create_session(agent_uuid)
+        response = RedirectResponse(url=f"/{agent_uuid}", status_code=302)
+        response.set_cookie(key="session", value=session_id, httponly=True)
+        return response
+    else:
+        agent = edge_agent_manager.get_agent(agent_uuid)
+        return templates.TemplateResponse("agent_login.html", {
+            "request": request,
+            "agent_uuid": agent_uuid,
+            "agent": agent,
+            "error": "Invalid password"
+        })
+
+@app.get("/api/{agent_uuid}/config")
+async def get_agent_config(agent_uuid: str, session: str = Cookie(None)) -> Dict[str, Any]:
+    """Get agent configuration."""
+    authenticated_agent = get_authenticated_agent(session)
+    if authenticated_agent != agent_uuid:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    # Get configuration from edge agent
+    agent_config = edge_agent_manager.get_agent_config(agent_uuid)
+    if not agent_config:
+        # Provide defaults if config is empty
+        agent_config = {
             "credentials": [{"username": "super", "password": "sp-admin"}],
             "preferred_password": "",
             "seed_switches": [],
@@ -198,17 +308,22 @@ async def get_config() -> Dict[str, Any]:
             "ip_pool": "192.168.10.0/24",
             "gateway": "192.168.10.1",
             "dns_server": "192.168.10.2",
-            "poll_interval": 60
+            "poll_interval": 300
         }
     
-    return app_config
+    return agent_config
 
-@app.post("/api/config")
-async def update_config(config: ZTPConfig) -> Dict[str, str]:
-    """Update configuration."""
-    global app_config
-    app_config = config.dict()
-    log_status("Configuration updated")
+@app.post("/api/{agent_uuid}/config")
+async def update_agent_config(agent_uuid: str, config: ZTPConfig, session: str = Cookie(None)) -> Dict[str, str]:
+    """Update agent configuration."""
+    authenticated_agent = get_authenticated_agent(session)
+    if authenticated_agent != agent_uuid:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    # Send configuration to edge agent
+    await edge_agent_manager.send_agent_config(agent_uuid, config.dict())
+    
+    log_status(f"Configuration updated for agent {agent_uuid}")
     return {"message": "Configuration updated successfully"}
 
 @app.get("/api/base-configs")
@@ -230,273 +345,184 @@ async def upload_base_config(name: str, file: UploadFile = File(...)) -> Dict[st
     
     return {"message": f"Base configuration '{name}' uploaded successfully"}
 
-@app.get("/api/status")
-async def get_status() -> ZTPStatus:
-    """Get ZTP process status."""
-    global ztp_process, ztp_starting
+@app.get("/api/{agent_uuid}/status")
+async def get_agent_status(agent_uuid: str, session: str = Cookie(None)) -> ZTPStatus:
+    """Get ZTP process status for specific edge agent."""
+    authenticated_agent = get_authenticated_agent(session)
+    if authenticated_agent != agent_uuid:
+        raise HTTPException(status_code=401, detail="Authentication required")
     
-    if not ztp_process:
-        return ZTPStatus(
-            running=False,
-            starting=ztp_starting,
-            switches_discovered=0,
-            switches_configured=0,
-            aps_discovered=0
-        )
+    # Get status from specific edge agent
+    agent_status = edge_agent_manager.get_agent_status(agent_uuid)
+    if not agent_status:
+        raise HTTPException(status_code=404, detail="Agent not found")
     
-    # Count devices
-    switches_discovered = len(ztp_process.inventory.get('switches', {}))
-    aps_discovered = len(ztp_process.inventory.get('aps', {}))
-    
-    # Count configured switches
-    switches_configured = sum(
-        1 for switch in ztp_process.inventory.get('switches', {}).values()
-        if switch.get('configured', False)
-    )
+    ztp_status = agent_status.get('ztp_status', {})
     
     return ZTPStatus(
-        running=ztp_process.running,
-        starting=ztp_starting and not ztp_process.running,  # Only starting if not yet running
-        switches_discovered=switches_discovered,
-        switches_configured=switches_configured,
-        aps_discovered=aps_discovered,
-        last_poll=datetime.now().isoformat() if ztp_process.running else None
+        running=ztp_status.get('running', False),
+        starting=ztp_status.get('starting', False),
+        switches_discovered=ztp_status.get('switches_discovered', 0),
+        switches_configured=ztp_status.get('switches_configured', 0),
+        aps_discovered=ztp_status.get('aps_discovered', 0),
+        last_poll=ztp_status.get('last_poll')
     )
 
-@app.get("/api/devices")
-async def get_devices() -> List[DeviceInfo]:
-    """Get discovered devices."""
-    global ztp_process
+@app.get("/api/{agent_uuid}/devices")
+async def get_agent_devices(agent_uuid: str, session: str = Cookie(None)) -> List[DeviceInfo]:
+    """Get discovered devices from specific edge agent."""
+    authenticated_agent = get_authenticated_agent(session)
+    if authenticated_agent != agent_uuid:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
     devices = []
     
-    if not ztp_process:
-        return devices
+    # Get device inventory from specific edge agent
+    inventory = edge_agent_manager.get_agent_device_inventory(agent_uuid)
     
-    # Get seed switch IPs for marking
+    # Get agent configuration for seed switch IPs
+    agent_config = edge_agent_manager.get_agent_config(agent_uuid)
     seed_ips = set()
-    if app_config:
-        for switch_config in app_config.get('seed_switches', []):
+    if agent_config:
+        for switch_config in agent_config.get('seed_switches', []):
             seed_ips.add(switch_config['ip'])
     
-    # Add switches
-    for mac, switch_data in ztp_process.inventory.get('switches', {}).items():
-        # Build task status
-        tasks_completed = []
-        tasks_failed = []
-        ap_ports = []
+    # Convert edge agent inventory format to DeviceInfo format
+    for device_data in inventory:
+        # Determine if this is a seed device
+        is_seed = device_data.get('ip_address') in seed_ips
         
-        if switch_data.get('base_config_applied'):
-            tasks_completed.append("Base configuration applied")
-        if switch_data.get('configured'):
-            tasks_completed.append("Basic switch configuration")
-            
-        # Count AP ports configured on this switch - look for APs connected to this switch
-        for ap_mac, ap_data in ztp_process.inventory.get('aps', {}).items():
-            if ap_data.get('switch_ip') == switch_data.get('ip'):
-                port = ap_data.get('switch_port', 'Unknown')
-                if port != 'Unknown':
-                    ap_ports.append(port)
-        
-        # Determine status with more granular states
-        status = "discovered"
-        if switch_data.get('configuring'):
-            status = "configuring"
-        elif switch_data.get('configured'):
-            status = "configured"
-        
-        devices.append(DeviceInfo(
-            ip=switch_data.get('ip', 'Unknown'),
-            mac=mac,
-            hostname=switch_data.get('hostname'),
-            model=switch_data.get('model'),
-            serial=switch_data.get('serial'),
-            status=status,
-            device_type="switch",
-            neighbors=switch_data.get('neighbors', {}),
-            tasks_completed=tasks_completed,
-            tasks_failed=tasks_failed,
-            is_seed=switch_data.get('is_seed', False) or switch_data.get('ip') in seed_ips,
-            ap_ports=ap_ports,
-            ssh_active=switch_data.get('ssh_active', False)
-        ))
-    
-    # Add APs
-    for mac, ap_data in ztp_process.inventory.get('aps', {}).items():
-        tasks_completed = []
-        if ap_data.get('status') == 'Configured':
-            tasks_completed.append("Port configured for AP traffic")
-        
-        # Determine AP status with more granular states
-        ap_status = "discovered"
-        if ap_data.get('configuring'):
-            ap_status = "configuring"
-        elif ap_data.get('status') == 'Configured':
-            ap_status = "configured"
-            
-        devices.append(DeviceInfo(
-            ip=ap_data.get('ip', 'Unknown'),
-            mac=mac,
-            hostname=ap_data.get('hostname') or ap_data.get('system_name'),
-            model=ap_data.get('model') or ap_data.get('system_name'),
-            serial=ap_data.get('serial', mac),
-            status=ap_status,
-            device_type="ap",
-            neighbors={},
-            tasks_completed=tasks_completed,
-            tasks_failed=[],
-            is_seed=False,
-            ap_ports=[],
-            connected_switch=ap_data.get('switch_ip'),
-            connected_port=ap_data.get('switch_port'),
-            ssh_active=ap_data.get('ssh_active', False)
-        ))
+        # Handle switch devices
+        if device_data.get('device_type') == 'switch':
+            devices.append(DeviceInfo(
+                ip=device_data.get('ip_address', 'Unknown'),
+                mac=device_data.get('mac_address', 'Unknown'),
+                hostname=device_data.get('hostname'),
+                model=device_data.get('model'),
+                serial=device_data.get('serial'),
+                status=device_data.get('status', 'discovered'),
+                device_type='switch',
+                neighbors=device_data.get('neighbors', {}),  # Full neighbor data for topology
+                tasks_completed=device_data.get('tasks_completed', []),
+                tasks_failed=device_data.get('tasks_failed', []),
+                is_seed=is_seed,
+                ap_ports=device_data.get('ap_ports', []),
+                connected_switch=None,
+                connected_port=None,
+                ssh_active=device_data.get('ssh_active', False),
+                base_config_applied=device_data.get('base_config_applied', False),  # Include for progress indicator
+                configured=device_data.get('configured', False)  # Include configured field for switches
+            ))
+        # Handle AP devices
+        elif device_data.get('device_type') == 'ap':
+            devices.append(DeviceInfo(
+                ip=device_data.get('ip_address', 'Unknown'),
+                mac=device_data.get('mac_address', 'Unknown'),
+                hostname=device_data.get('hostname'),
+                model=device_data.get('model'),
+                serial=device_data.get('serial', ''),
+                status=device_data.get('status', 'discovered'),
+                device_type='ap',
+                neighbors={},  # APs don't have neighbors
+                tasks_completed=device_data.get('tasks_completed', []),
+                tasks_failed=device_data.get('tasks_failed', []),
+                is_seed=False,  # APs are never seed devices
+                ap_ports=[],
+                connected_switch=device_data.get('connected_switch'),  # For topology
+                connected_port=device_data.get('connected_port'),  # For topology
+                ssh_active=False,
+                configured=device_data.get('configured', False)  # Include configured field for APs
+            ))
+        # Handle unknown device types
+        else:
+            devices.append(DeviceInfo(
+                ip=device_data.get('ip_address', 'Unknown'),
+                mac=device_data.get('mac_address', 'Unknown'),
+                hostname=device_data.get('hostname'),
+                model=device_data.get('model'),
+                serial=device_data.get('serial'),
+                status=device_data.get('status', 'discovered'),
+                device_type=device_data.get('device_type', 'unknown'),
+                neighbors=device_data.get('neighbors', {}),
+                tasks_completed=device_data.get('tasks_completed', []),
+                tasks_failed=device_data.get('tasks_failed', []),
+                is_seed=is_seed,
+                ap_ports=device_data.get('ap_ports', []),
+                connected_switch=device_data.get('connected_switch'),
+                connected_port=device_data.get('connected_port'),
+                ssh_active=device_data.get('ssh_active', False)
+            ))
     
     return devices
 
-@app.post("/api/ztp/start")
-async def start_ztp(background_tasks: BackgroundTasks) -> Dict[str, Any]:
-    """Start the ZTP process."""
-    global ztp_process, app_config, ztp_starting
+@app.post("/api/{agent_uuid}/ztp/start")
+async def start_agent_ztp(agent_uuid: str, session: str = Cookie(None)) -> Dict[str, Any]:
+    """Start ZTP process on specific edge agent."""
+    authenticated_agent = get_authenticated_agent(session)
+    if authenticated_agent != agent_uuid:
+        raise HTTPException(status_code=401, detail="Authentication required")
     
-    if not app_config:
-        raise HTTPException(status_code=400, detail="Configuration not set")
-    
-    if ztp_process and ztp_process.running:
-        return {"message": "ZTP process is already running", "errors": []}
-    
-    if ztp_starting:
-        return {"message": "ZTP process is starting", "errors": []}
-    
-    # Set starting flag
-    ztp_starting = True
+    # Get agent configuration
+    agent_config = edge_agent_manager.get_agent_config(agent_uuid)
+    if not agent_config:
+        raise HTTPException(status_code=400, detail="Agent configuration not set")
     
     try:
-        # Convert app config to ZTP config format
-        config = {
-            'ztp': {'poll_interval': app_config.get('poll_interval', 60)},
-            'network': {
-                'base_config': base_configs.get(app_config.get('base_config_name', '')),
-                'management_vlan': app_config.get('management_vlan', 10),
-                'wireless_vlans': app_config.get('wireless_vlans', [20, 30, 40]),
-                'ip_pool': app_config.get('ip_pool', '192.168.10.0/24'),
-                'gateway': app_config.get('gateway', '192.168.10.1'),
-            },
-            'agent': {
-                'openrouter_api_key': app_config.get('openrouter_api_key', ''),
-                'model': app_config.get('model', 'anthropic/claude-3-5-haiku'),
-            },
-            'credentials': app_config.get('credentials', [])  # Pass credentials to ZTP process
+        # Send start ZTP command to edge agent
+        await edge_agent_manager.send_ztp_command(agent_uuid, "start", agent_config)
+        
+        log_status(f"ZTP started on edge agent {agent_uuid}")
+        return {
+            "message": "ZTP process started on edge agent",
+            "errors": [],
+            "success": True
         }
         
-        # Create ZTP process
-        ztp_process = ZTPProcess(config)
-        
-        # Track connection errors
-        connection_errors = []
-        successful_switches = 0
-        
-        # Add seed switches with automatic credential cycling
-        for switch_config in app_config.get('seed_switches', []):
-            ip = switch_config['ip']
-            preferred_password = app_config.get('preferred_password', '')
-            
-            # Build list of credentials to try (default first, then user-added)
-            credentials_to_try = [{"username": "super", "password": "sp-admin"}]  # Default first
-            user_credentials = app_config.get('credentials', [])
-            for cred in user_credentials:
-                # Skip if it's the same as default
-                if not (cred['username'] == 'super' and cred['password'] == 'sp-admin'):
-                    credentials_to_try.append(cred)
-            
-            # Try each credential until one works
-            switch_added = False
-            attempted_creds = []
-            
-            for i, cred in enumerate(credentials_to_try):
-                username = cred['username']
-                password = cred['password']
-                attempted_creds.append(f"{username}/{'*' * len(password)}")
-                
-                log_status(f"Trying to connect to seed switch {ip} with credentials {username}/{'*' * len(password)}")
-                
-                # Suppress errors for all attempts except the last one
-                suppress_errors = i < len(credentials_to_try) - 1
-                
-                if ztp_process.add_switch(ip, username, password, preferred_password, suppress_errors=suppress_errors):
-                    successful_switches += 1
-                    log_status(f"Successfully connected to seed switch {ip} with credentials {username}/{'*' * len(password)}")
-                    switch_added = True
-                    break
-            
-            if not switch_added:
-                error_msg = f"Failed to connect to seed switch {ip} with any available credentials (tried: {', '.join(attempted_creds)}). Check network connectivity and credentials."
-                connection_errors.append(error_msg)
-                log_status(error_msg, "error")
-        
-        # Check if we have any successful connections
-        if successful_switches == 0:
-            # Clear starting flag since we're not actually starting
-            ztp_starting = False
-            error_msg = "No seed switches could be connected. Please check credentials and network connectivity."
-            log_status(error_msg, "error")
-            return {
-                "message": error_msg,
-                "errors": connection_errors,
-                "success": False
-            }
-        
-        # Start the process if we have at least one successful connection
-        background_tasks.add_task(run_ztp_process)
-        
-        # Don't clear starting flag here - let run_ztp_process clear it after actually starting
-        
-        if connection_errors:
-            message = f"ZTP process started with {successful_switches} seed switch(es), but {len(connection_errors)} failed to connect"
-            log_status(message, "warning")
-            return {
-                "message": message,
-                "errors": connection_errors,
-                "success": True
-            }
-        else:
-            message = f"ZTP process started successfully with {successful_switches} seed switch(es)"
-            log_status(message)
-            return {
-                "message": message,
-                "errors": [],
-                "success": True
-            }
-        
     except Exception as e:
-        # Clear starting flag on error
-        ztp_starting = False
-        error_msg = f"Failed to start ZTP process: {str(e)}"
+        error_msg = f"Failed to start ZTP on edge agent: {str(e)}"
         log_status(error_msg, "error")
         raise HTTPException(status_code=500, detail=error_msg)
 
-@app.post("/api/ztp/stop")
-async def stop_ztp() -> Dict[str, str]:
-    """Stop the ZTP process."""
-    global ztp_process, ztp_starting
+@app.post("/api/{agent_uuid}/ztp/stop")
+async def stop_agent_ztp(agent_uuid: str, session: str = Cookie(None)) -> Dict[str, str]:
+    """Stop ZTP process on specific edge agent."""
+    authenticated_agent = get_authenticated_agent(session)
+    if authenticated_agent != agent_uuid:
+        raise HTTPException(status_code=401, detail="Authentication required")
     
-    # Clear starting flag regardless of current state
-    ztp_starting = False
-    
-    if not ztp_process:
-        return {"message": "ZTP process is not initialized"}
-    
-    if not ztp_process.running:
-        return {"message": "ZTP process is not running"}
-    
-    ztp_process.stop()
-    log_status("ZTP process stopped")
-    
-    return {"message": "ZTP process stopped successfully"}
+    try:
+        # Send stop command to edge agent
+        await edge_agent_manager.send_ztp_command(agent_uuid, "stop")
+        
+        log_status(f"ZTP stop command sent to edge agent {agent_uuid}")
+        return {"message": "ZTP process stopped on edge agent"}
+        
+    except Exception as e:
+        error_msg = f"Failed to stop ZTP on edge agent: {str(e)}"
+        log_status(error_msg, "error")
+        raise HTTPException(status_code=500, detail=error_msg)
 
-@app.get("/api/logs")
-async def get_logs() -> List[Dict[str, Any]]:
-    """Get status logs."""
-    return status_log
+@app.get("/api/{agent_uuid}/logs")
+async def get_agent_logs(agent_uuid: str, session: str = Cookie(None)) -> List[Dict[str, Any]]:
+    """Get logs for specific edge agent."""
+    authenticated_agent = get_authenticated_agent(session)
+    if authenticated_agent != agent_uuid:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    # Get logs from specific edge agent
+    agent_logs = edge_agent_manager.get_agent_logs(agent_uuid)
+    return agent_logs or []
+
+@app.get("/api/{agent_uuid}/events")
+async def get_agent_events(agent_uuid: str, limit: int = 100, session: str = Cookie(None)):
+    """Get recent ZTP events for specific edge agent."""
+    authenticated_agent = get_authenticated_agent(session)
+    if authenticated_agent != agent_uuid:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    # Get events from specific edge agent
+    agent_events = edge_agent_manager.get_agent_events(agent_uuid, limit)
+    return agent_events or []
 
 @app.post("/api/chat")
 async def chat_with_ai(message: ChatMessage) -> ChatResponse:
@@ -524,12 +550,13 @@ async def chat_with_ai(message: ChatMessage) -> ChatResponse:
         # Get switches from ZTP process inventory
         switches = ztp_process.inventory.get('switches', {})
         
-        # Create chat interface with proper parameters
+        # Create chat interface with edge agent-aware tools
         chat_interface = ChatInterface(
             openrouter_api_key=openrouter_api_key,
             model=model,
             switches=switches,
-            ztp_process=ztp_process
+            ztp_process=ztp_process,
+            ssh_executor=execute_ssh_via_edge_agent
         )
         
         # Get response from AI
@@ -599,12 +626,13 @@ async def chat_with_ai_stream(message: ChatMessage):
                     model = app_config.get('model', 'anthropic/claude-3-5-haiku')
                     switches = ztp_process.inventory.get('switches', {})
                     
-                    # Create chat interface
+                    # Create chat interface with edge agent-aware tools
                     chat_interface = ChatInterface(
                         openrouter_api_key=openrouter_api_key,
                         model=model,
                         switches=switches,
-                        ztp_process=ztp_process
+                        ztp_process=ztp_process,
+                        ssh_executor=execute_ssh_via_edge_agent
                     )
                     
                     # Process with streaming callback
@@ -697,6 +725,151 @@ async def send_heartbeats(websocket: WebSocket):
     except Exception as e:
         logger.error(f"Heartbeat task error: {e}")
 
+@app.websocket("/ws/edge-agent/{agent_id}")
+async def websocket_edge_agent(websocket: WebSocket, agent_id: str, authorization: Optional[str] = Header(None)):
+    """WebSocket endpoint for edge agent connections."""
+    # Extract token from Authorization header
+    auth_token = ""
+    if authorization and authorization.startswith("Bearer "):
+        auth_token = authorization[7:]
+    
+    # Handle edge agent connection
+    await edge_agent_manager.handle_agent_connection(websocket, auth_token)
+
+@app.get("/api/edge-agents")
+async def get_edge_agents():
+    """Get list of connected edge agents."""
+    return edge_agent_manager.get_agents()
+
+@app.get("/api/ztp/status")
+async def get_ztp_status():
+    """Get ZTP status summary across all edge agents."""
+    return edge_agent_manager.get_ztp_summary()
+
+@app.get("/api/ztp/events")
+async def get_ztp_events(limit: int = 100):
+    """Get recent ZTP events."""
+    return edge_agent_manager.get_recent_events(limit)
+
+@app.get("/api/ztp/inventory")
+async def get_device_inventory():
+    """Get device inventory from all edge agents."""
+    return edge_agent_manager.get_device_inventory()
+
+@app.get("/api/edge-agents/{agent_id}")
+async def get_edge_agent(agent_id: str):
+    """Get specific edge agent information."""
+    agent = edge_agent_manager.get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Edge agent not found")
+    return agent
+
+@app.post("/api/edge-agents/{agent_id}/command")
+async def execute_ssh_command(agent_id: str, command: dict):
+    """Execute SSH command through edge agent."""
+    try:
+        result = await edge_agent_manager.execute_ssh_command(
+            agent_id=agent_id,
+            target_ip=command["target_ip"],
+            username=command["username"],
+            password=command["password"],
+            command=command["command"],
+            timeout=command.get("timeout", 30)
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except TimeoutError as e:
+        raise HTTPException(status_code=504, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/edge-agents/{agent_id}/start-ztp")
+async def start_agent_ztp(agent_id: str):
+    """Start ZTP process on specific edge agent."""
+    try:
+        agent = edge_agent_manager.get_agent(agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail="Edge agent not found")
+        
+        # Send start ZTP command to the specific agent
+        await edge_agent_manager.send_agent_command(agent_id, {
+            "type": "start_ztp",
+            "message": "Start ZTP process"
+        })
+        
+        log_status(f"ZTP start command sent to edge agent {agent_id}")
+        return {"message": f"ZTP start command sent to agent {agent_id}"}
+        
+    except Exception as e:
+        error_msg = f"Failed to start ZTP on agent {agent_id}: {str(e)}"
+        log_status(error_msg, "error")
+        raise HTTPException(status_code=500, detail=error_msg)
+
+@app.post("/api/edge-agents/{agent_id}/stop-ztp")
+async def stop_agent_ztp(agent_id: str):
+    """Stop ZTP process on specific edge agent."""
+    try:
+        agent = edge_agent_manager.get_agent(agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail="Edge agent not found")
+        
+        # Send stop ZTP command to the specific agent
+        await edge_agent_manager.send_agent_command(agent_id, {
+            "type": "stop_ztp",
+            "message": "Stop ZTP process"
+        })
+        
+        log_status(f"ZTP stop command sent to edge agent {agent_id}")
+        return {"message": f"ZTP stop command sent to agent {agent_id}"}
+        
+    except Exception as e:
+        error_msg = f"Failed to stop ZTP on agent {agent_id}: {str(e)}"
+        log_status(error_msg, "error")
+        raise HTTPException(status_code=500, detail=error_msg)
+
+@app.get("/api/edge-agents/{agent_id}/logs")
+async def get_agent_logs(agent_id: str):
+    """Get logs from specific edge agent."""
+    try:
+        agent = edge_agent_manager.get_agent(agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail="Edge agent not found")
+        
+        # For now, return filtered logs from the global log
+        # In the future, this could request logs directly from the agent
+        agent_logs = []
+        for log_entry in status_log:
+            if f"agent {agent_id}" in log_entry.get("message", "").lower() or \
+               f"edge agent {agent_id}" in log_entry.get("message", "").lower():
+                agent_logs.append(log_entry)
+        
+        return agent_logs[-50:]  # Return last 50 relevant log entries
+        
+    except Exception as e:
+        error_msg = f"Failed to get logs for agent {agent_id}: {str(e)}"
+        log_status(error_msg, "error")
+        raise HTTPException(status_code=500, detail=error_msg)
+
+@app.post("/api/edge-agents/{agent_id}/config")
+async def send_agent_config(agent_id: str, config: dict):
+    """Send configuration to specific edge agent."""
+    try:
+        agent = edge_agent_manager.get_agent(agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail="Edge agent not found")
+        
+        # Send configuration to the specific agent
+        await edge_agent_manager.send_ztp_config(agent_id, config)
+        
+        log_status(f"Configuration sent to edge agent {agent_id}")
+        return {"message": f"Configuration sent to agent {agent_id}"}
+        
+    except Exception as e:
+        error_msg = f"Failed to send configuration to agent {agent_id}: {str(e)}"
+        log_status(error_msg, "error")
+        raise HTTPException(status_code=500, detail=error_msg)
+
 @app.websocket("/ws/chat")
 async def websocket_chat(websocket: WebSocket):
     """WebSocket endpoint for real-time chat streaming."""
@@ -730,7 +903,8 @@ async def websocket_chat(websocket: WebSocket):
             openrouter_api_key=openrouter_api_key,
             model=model,
             switches=switches,
-            ztp_process=ztp_process
+            ztp_process=ztp_process,
+            ssh_executor=execute_ssh_via_edge_agent
         )
         
         # Define WebSocket callback with connection check
@@ -825,31 +999,10 @@ async def websocket_chat(websocket: WebSocket):
         if websocket.application_state == websocket.application_state.CONNECTED:
             await websocket.close()
 
-async def run_ztp_process():
-    """Run the ZTP process in the background."""
-    global ztp_process, ztp_starting
-    import asyncio
-    
-    try:
-        if ztp_process:
-            # The ZTP process starts automatically when switches are added
-            # We just need to start the background thread
-            if not ztp_process.running:
-                ztp_process.start()
-                
-            # Clear the starting flag immediately after calling start()
-            ztp_starting = False
-            log_status("ZTP process started successfully")
-        else:
-            # Clear starting flag if no process exists
-            ztp_starting = False
-            log_status("No ZTP process to start", "warning")
-    except Exception as e:
-        # Clear starting flag on any error
-        ztp_starting = False
-        error_msg = f"Error starting ZTP process: {str(e)}"
-        log_status(error_msg, "error")
-        logger.exception("Exception in run_ztp_process")
+# Background ZTP process removed - all ZTP operations now handled by edge agents
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    import os
+    port = int(os.getenv("PORT", 8000))
+    host = os.getenv("HOST", "0.0.0.0")
+    uvicorn.run(app, host=host, port=port, log_level="info")

@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RUCKUS ZTP - Agent Not Found</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1 class="logo">[RUCKUS ZTP CONTROL CENTER]</h1>
+            <p class="subtitle">Agent Not Found</p>
+        </header>
+
+        <div class="error-container">
+            <div class="error-card">
+                <div class="error-icon">🔍</div>
+                <h2>Agent Not Found</h2>
+                <p>The agent with ID <code>{{ agent_uuid }}</code> is not currently connected.</p>
+                
+                <div class="error-details">
+                    <h3>Possible reasons:</h3>
+                    <ul>
+                        <li>🔌 The agent is offline or not running</li>
+                        <li>🌐 Network connectivity issues</li>
+                        <li>Agent configuration problems</li>
+                        <li>🔗 Invalid or expired agent URL</li>
+                    </ul>
+                </div>
+
+                <div class="error-actions">
+                    <a href="/" class="btn btn-primary">← View Connected Agents</a>
+                    <button onclick="refreshPage()" class="btn btn-secondary">🔄 Refresh</button>
+                </div>
+
+                <div class="troubleshooting">
+                    <h4>Troubleshooting:</h4>
+                    <ol>
+                        <li>Check if the agent is running on the target machine</li>
+                        <li>Verify network connectivity between agent and web app</li>
+                        <li>Check agent logs for connection errors</li>
+                        <li>Restart the agent service if necessary</li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="footer">
+        <p>Powered by <a href="https://neuralconfig.com" target="_blank" rel="noopener noreferrer">neural[config]</a></p>
+    </footer>
+
+    <script>
+        function refreshPage() {
+            window.location.reload();
+        }
+        
+        // Auto-refresh every 5 seconds to check if agent comes online
+        setInterval(() => {
+            window.location.reload();
+        }, 5000);
+    </script>
+</body>
+</html>

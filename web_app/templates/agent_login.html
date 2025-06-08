@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RUCKUS ZTP - Agent Login</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1 class="logo">[RUCKUS ZTP CONTROL CENTER]</h1>
+            <p class="subtitle">Agent Authentication</p>
+        </header>
+
+        <div class="login-container">
+            <div class="login-card">
+                <div class="agent-info-header">
+                    <h2>🔐 Access Agent</h2>
+                    <div class="agent-details">
+                        <div class="agent-uuid">{{ agent_uuid }}</div>
+                        {% if agent %}
+                        <div class="agent-meta">
+                            <span class="agent-hostname">{{ agent.hostname }}</span>
+                            <span class="agent-status {{ agent.status }}">
+                                {% if agent.status == 'online' %}🟢{% else %}🔴{% endif %} 
+                                {{ agent.status }}
+                            </span>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <form method="post" action="/{{ agent_uuid }}/auth" class="login-form">
+                    <div class="form-group">
+                        <label for="password">Agent Password:</label>
+                        <input 
+                            type="password" 
+                            id="password" 
+                            name="password" 
+                            placeholder="Enter the password for this agent"
+                            required
+                            autofocus
+                        >
+                    </div>
+                    
+                    {% if error %}
+                    <div class="error-message">
+                        ❌ {{ error }}
+                    </div>
+                    {% endif %}
+                    
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary">Access Agent</button>
+                        <a href="/" class="btn btn-secondary">← Back to Agent List</a>
+                    </div>
+                </form>
+
+                <div class="login-help">
+                    <h4>Need help?</h4>
+                    <ul>
+                        <li>The password was set when the agent was installed</li>
+                        <li>Check the agent installation output for the password</li>
+                        <li>Contact your system administrator if you don't have the password</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="footer">
+        <p>Powered by <a href="https://neuralconfig.com" target="_blank" rel="noopener noreferrer">neural[config]</a></p>
+    </footer>
+
+    <script>
+        // Auto-focus password field
+        document.getElementById('password').focus();
+        
+        // Handle Enter key
+        document.getElementById('password').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                document.querySelector('.login-form').submit();
+            }
+        });
+    </script>
+</body>
+</html>

@@ -16,6 +16,7 @@ from typing import Iterator, Any
 
 from ztp_agent.network.switch import SwitchOperation
 from ztp_agent.agent.simple_langchain_tools import get_network_tools
+from ztp_agent.agent.proxy_aware_tools import get_proxy_aware_network_tools
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -126,7 +127,8 @@ class LangChainChatInterface:
         openrouter_api_key: str,
         model: str,
         switches: Dict[str, Any],
-        ztp_process = None
+        ztp_process = None,
+        ssh_executor = None
     ):
         """
         Initialize the chat interface.
@@ -136,16 +138,18 @@ class LangChainChatInterface:
             model: OpenRouter model to use.
             switches: Dictionary of switch information.
             ztp_process: ZTP process instance for accessing inventory.
+            ssh_executor: Optional SSH executor function for proxy support.
         """
         self.openrouter_api_key = openrouter_api_key
         self.model = model
         self.switches = switches
         self.ztp_process = ztp_process
+        self.ssh_executor = ssh_executor
         
         # Set up the AI agent
         self.agent_executor = self._create_agent()
         
-        logger.info(f"Initialized LangChain chat interface with model: {model}")
+        logger.info(f"Initialized LangChain chat interface with model: {model}, SSH executor: {ssh_executor is not None}")
     
     def _create_agent(self) -> AgentExecutor:
         """
@@ -157,8 +161,13 @@ class LangChainChatInterface:
         # Convert your switch dictionary to SwitchOperation instances
         switch_operations = self._prepare_switch_operations()
         
-        # Get tools for the agent
-        tools = get_network_tools(switch_operations, self.ztp_process)
+        # Get tools for the agent - use proxy-aware tools if SSH executor is provided
+        if self.ssh_executor:
+            tools = get_proxy_aware_network_tools(switch_operations, self.ztp_process, self.ssh_executor)
+            logger.info("Using proxy-aware network tools")
+        else:
+            tools = get_network_tools(switch_operations, self.ztp_process)
+            logger.info("Using direct network tools")
         
         # Set up the system message for the agent
         system_message = """

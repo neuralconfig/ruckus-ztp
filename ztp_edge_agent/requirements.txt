@@ -1,0 +1,7 @@
+# ZTP Edge Agent Requirements - Python 3.8+ compatible
+websockets>=8.1,<10.0
+paramiko>=2.7.0,<3.0.0
+pyyaml>=6.0
+configparser
+cmd2>=2.0.0
+prompt_toolkit>=3.0.0

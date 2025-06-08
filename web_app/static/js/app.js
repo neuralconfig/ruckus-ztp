@@ -1,13 +1,33 @@
 // RUCKUS ZTP Agent Web Interface JavaScript
 
 // Global state
-let config = {};
-let credentials = [];
-let seedSwitches = [];
-let baseConfigs = {};
-let currentTab = 'config';
+let currentTab = 'configuration';  // Start with configuration
+
+// Agent-specific state (initialized when agent UUID is available)
+let agentConfig = {
+    credentials: [],
+    seedSwitches: [],
+    baseConfigs: {},
+    config: {}
+};
 let statusUpdateInterval;
 let topologyUpdateInterval;
+let dashboardUpdateInterval;
+let eventsUpdateInterval;
+let availableEdgeAgents = [];
+let selectedEdgeAgentId = null;
+let edgeAgentAuthToken = null;
+let ztpEvents = [];
+let deviceInventory = {};
+
+// Helper function to get agent-scoped API URL
+function getAgentApiUrl(endpoint) {
+    const agentUuid = window.AGENT_UUID;
+    if (!agentUuid) {
+        throw new Error('Agent UUID not available');
+    }
+    return `/api/${agentUuid}${endpoint}`;
+}
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', function() {
@@ -15,33 +35,21 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 async function initializeApp() {
-    await loadConfig();
+    await loadAgentConfig();
     await loadBaseConfigs();
     setupEventListeners();
-    updateCredentialsList();
-    updateSeedSwitchList();
-    updateBaseConfigSelect();
-    populateConfigForm();
     
-    // Start status updates if on monitoring tab
-    if (currentTab === 'monitoring') {
-        startStatusUpdates();
-    }
+    // Start with configuration tab active
+    switchTab('configuration');
 }
 
 function setupEventListeners() {
     // Tab navigation
     document.querySelectorAll('.tab-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            switchTab(e.target.dataset.tab);
+        btn.addEventListener('click', async (e) => {
+            await switchTab(e.target.dataset.tab);
         });
     });
-    
-    // Base config selection
-    document.getElementById('base-config-select').addEventListener('change', updateConfigPreview);
-    
-    // File upload
-    document.getElementById('config-file').addEventListener('change', handleFileSelect);
     
     // Auto-refresh for monitoring tab
     setInterval(async () => {
@@ -53,7 +61,7 @@ function setupEventListeners() {
 }
 
 // Tab Management
-function switchTab(tabName) {
+async function switchTab(tabName) {
     // Update tab buttons
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.classList.remove('active');
@@ -84,6 +92,18 @@ function switchTab(tabName) {
         stopTopologyUpdates(); // Stop topology updates when switching away
     }
     
+    // Load configuration if switching to configuration tab
+    if (tabName === 'configuration') {
+        await loadAgentConfig();
+        populateConfigForm();
+        updateBaseConfigSelect();
+    }
+    
+    // Load events if switching to events tab
+    if (tabName === 'events') {
+        updateEvents();
+    }
+    
     // Load logs if switching to logs tab
     if (tabName === 'logs') {
         refreshLogs();
@@ -91,37 +111,71 @@ function switchTab(tabName) {
 }
 
 // Configuration Management
-async function loadConfig() {
+async function loadAgentConfig() {
     try {
-        const response = await fetch('/api/config');
-        config = await response.json();
-        credentials = config.credentials || [];
-        seedSwitches = config.seed_switches || [];
+        const response = await fetch(getAgentApiUrl('/config'));
+        agentConfig.config = await response.json();
+        agentConfig.credentials = agentConfig.config.credentials || [];
+        agentConfig.seedSwitches = agentConfig.config.seed_switches || [];
     } catch (error) {
-        console.error('Failed to load config:', error);
-        showNotification('Failed to load configuration', 'error');
+        console.error('Failed to load agent config:', error);
+        // Initialize empty state for this agent
+        agentConfig.credentials = [];
+        agentConfig.seedSwitches = [];
+        agentConfig.config = {};
     }
 }
 
 async function saveConfig() {
     try {
+        // Validate required fields
+        const preferredPassword = document.getElementById('preferred-password').value.trim();
+        if (!preferredPassword) {
+            showNotification('New Super Password is required for first-time switch setup', 'error');
+            document.getElementById('preferred-password').focus();
+            return;
+        }
+        
+        // Always include default credentials, but avoid duplicates
+        const allCredentials = [
+            { username: 'super', password: 'sp-admin' }
+        ];
+        
+        // Add user-defined credentials, avoiding duplicates
+        agentConfig.credentials.forEach(cred => {
+            const isDuplicate = allCredentials.some(existing => 
+                existing.username === cred.username && existing.password === cred.password
+            );
+            if (!isDuplicate) {
+                allCredentials.push(cred);
+            }
+        });
+        
+        console.log('Sending credentials to agent:', allCredentials);
+        
+        // Get the selected base configuration content
+        const selectedBaseConfigName = document.getElementById('base-config-select').value;
+        const baseConfigContent = agentConfig.baseConfigs[selectedBaseConfigName] || '';
+        
         // Collect form data
         const formConfig = {
-            credentials: credentials,
+            credentials: allCredentials,
             preferred_password: document.getElementById('preferred-password').value,
-            seed_switches: seedSwitches,
-            base_config_name: document.getElementById('base-config-select').value,
-            openrouter_api_key: document.getElementById('openrouter-key').value,
-            model: document.getElementById('model-select').value,
+            seed_switches: agentConfig.seedSwitches,
+            base_config_name: selectedBaseConfigName,
+            base_config_content: baseConfigContent,
             management_vlan: parseInt(document.getElementById('management-vlan').value),
             wireless_vlans: document.getElementById('wireless-vlans').value.split(',').map(v => parseInt(v.trim())),
             ip_pool: document.getElementById('ip-pool').value,
             gateway: document.getElementById('gateway').value,
             dns_server: document.getElementById('dns-server').value,
-            poll_interval: parseInt(document.getElementById('poll-interval').value)
+            poll_interval: parseInt(document.getElementById('poll-interval').value),
+            fast_discovery: document.getElementById('fast-discovery').checked
         };
         
-        const response = await fetch('/api/config', {
+        console.log('Sending config with seed_switches:', formConfig.seed_switches);
+        
+        const response = await fetch(getAgentApiUrl('/config'), {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(formConfig)
@@ -140,110 +194,178 @@ async function saveConfig() {
 }
 
 function populateConfigForm() {
-    document.getElementById('preferred-password').value = config.preferred_password || '';
-    document.getElementById('openrouter-key').value = config.openrouter_api_key || '';
-    document.getElementById('model-select').value = config.model || 'anthropic/claude-3-5-haiku';
-    document.getElementById('management-vlan').value = config.management_vlan || 10;
-    document.getElementById('wireless-vlans').value = (config.wireless_vlans || [20, 30, 40]).join(',');
-    document.getElementById('ip-pool').value = config.ip_pool || '192.168.10.0/24';
-    document.getElementById('gateway').value = config.gateway || '192.168.10.1';
-    document.getElementById('dns-server').value = config.dns_server || '192.168.10.2';
-    document.getElementById('poll-interval').value = config.poll_interval || 60;
-}
-
-// Credential Management
-function addCredential() {
-    showModal('credential-modal');
-}
-
-function saveCredential() {
-    const username = document.getElementById('modal-username').value;
-    const password = document.getElementById('modal-password').value;
+    // Basic form fields
+    document.getElementById('preferred-password').value = agentConfig.config.preferred_password || 'admin123';
+    document.getElementById('management-vlan').value = agentConfig.config.management_vlan || 10;
+    document.getElementById('wireless-vlans').value = (agentConfig.config.wireless_vlans || [20, 30, 40]).join(',');
+    document.getElementById('ip-pool').value = agentConfig.config.ip_pool || '192.168.10.0/24';
+    document.getElementById('gateway').value = agentConfig.config.gateway || '192.168.10.1';
+    document.getElementById('dns-server').value = agentConfig.config.dns_server || '192.168.10.2';
+    document.getElementById('poll-interval').value = agentConfig.config.poll_interval || 15;
+    document.getElementById('fast-discovery').checked = agentConfig.config.fast_discovery !== false;
     
-    if (!username || !password) {
-        showNotification('Please enter both username and password', 'error');
-        return;
+    // Update agent UUID display
+    document.getElementById('agent-uuid-display').value = window.AGENT_UUID;
+    
+    // Populate credentials (excluding the default one that's already shown)
+    populateCredentialsList();
+    
+    // Populate seed switches
+    populateSeedSwitchesList();
+    
+    // Update base config dropdown first
+    updateBaseConfigSelect();
+    
+    // Set base config selection and preview
+    if (agentConfig.config.base_config_name && agentConfig.baseConfigs[agentConfig.config.base_config_name]) {
+        document.getElementById('base-config-select').value = agentConfig.config.base_config_name;
+        updateConfigPreview();
+    }
+}
+
+// Configuration Form Management
+function populateCredentialsList() {
+    const container = document.getElementById('credential-list');
+    // Clear existing credentials (except default)
+    const defaultCred = container.querySelector('.default-credential');
+    container.innerHTML = '';
+    if (defaultCred) {
+        container.appendChild(defaultCred);
     }
     
-    credentials.push({ username, password });
-    updateCredentialsList();
-    closeModal('credential-modal');
-    
-    showNotification('Credential added successfully', 'success');
+    // Add other credentials
+    if (agentConfig.credentials && agentConfig.credentials.length > 0) {
+        agentConfig.credentials.forEach((cred, index) => {
+            if (cred.username !== 'super' || cred.password !== 'sp-admin') {
+                const credDiv = document.createElement('div');
+                credDiv.className = 'credential-item';
+                credDiv.innerHTML = `
+                    <span class="credential-display">${cred.username} / ${cred.password}</span>
+                    <button class="btn-small" onclick="removeCredential(${index})">Remove</button>
+                `;
+                container.appendChild(credDiv);
+            }
+        });
+    }
 }
 
-function removeCredential(index) {
-    if (index === 0) return; // Can't remove default credential
-    
-    credentials.splice(index, 1);
-    updateCredentialsList();
-    showNotification('Credential removed', 'success');
-}
-
-function updateCredentialsList() {
-    const container = document.querySelector('.credential-list');
+function populateSeedSwitchesList() {
+    const container = document.getElementById('seed-switch-list');
     container.innerHTML = '';
     
-    // Always show default credential first
-    const defaultCred = document.createElement('div');
-    defaultCred.className = 'credential-item default-credential';
-    defaultCred.innerHTML = `
-        <span class="credential-display">super / sp-admin (default)</span>
-    `;
-    container.appendChild(defaultCred);
-    
-    credentials.forEach((cred, index) => {
-        if (index === 0 && cred.username === 'super' && cred.password === 'sp-admin') {
-            return; // Skip if it's the default credential in the array
-        }
-        
-        const credDiv = document.createElement('div');
-        credDiv.className = 'credential-item';
-        credDiv.innerHTML = `
-            <span class="credential-display">${cred.username} / ${cred.password}</span>
-            <button class="btn-small" onclick="removeCredential(${index})">Remove</button>
-        `;
-        container.appendChild(credDiv);
-    });
+    if (agentConfig.seedSwitches && agentConfig.seedSwitches.length > 0) {
+        agentConfig.seedSwitches.forEach((switchConfig, index) => {
+            const switchDiv = document.createElement('div');
+            switchDiv.className = 'seed-switch-item';
+            switchDiv.innerHTML = `
+                <span class="switch-display">${switchConfig.ip}</span>
+                <button class="btn-small" onclick="removeSeedSwitch(${index})">Remove</button>
+            `;
+            container.appendChild(switchDiv);
+        });
+    }
 }
 
-// Seed Switch Management
 function addSeedSwitch() {
-    showModal('switch-modal');
-}
-
-function saveSeedSwitch() {
-    const ip = document.getElementById('modal-switch-ip').value;
+    const ipInput = document.getElementById('new-seed-switch-ip');
+    const ip = ipInput.value.trim();
     
     if (!ip) {
         showNotification('Please enter an IP address', 'error');
         return;
     }
     
-    // Validate IP address format
-    const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/;
-    if (!ipPattern.test(ip)) {
+    // Simple IP validation
+    const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
+    if (!ipRegex.test(ip)) {
         showNotification('Please enter a valid IP address', 'error');
         return;
     }
     
-    // Check for duplicates
-    if (seedSwitches.find(sw => sw.ip === ip)) {
-        showNotification('This IP address is already added', 'error');
+    // Check if already exists
+    if (agentConfig.seedSwitches.some(sw => sw.ip === ip)) {
+        showNotification('IP address already exists', 'warning');
         return;
     }
     
-    // No credentials_id needed - will cycle through available credentials automatically
-    seedSwitches.push({ ip });
-    updateSeedSwitchList();
-    closeModal('switch-modal');
-    
+    // Add to agent's seed switches (all credentials will be tried automatically)
+    agentConfig.seedSwitches.push({ ip: ip });
+    console.log('Added seed switch, current list:', agentConfig.seedSwitches);
+    populateSeedSwitchesList();
+    ipInput.value = '';
     showNotification('Seed switch added successfully', 'success');
 }
 
+function handleSeedSwitchKeyPress(event) {
+    if (event.key === 'Enter') {
+        addSeedSwitch();
+    }
+}
+
+function handleCredentialKeyPress(event) {
+    if (event.key === 'Enter') {
+        addCredential();
+    }
+}
+
+function removeSeedSwitch(index) {
+    agentConfig.seedSwitches.splice(index, 1);
+    populateSeedSwitchesList();
+    showNotification('Seed switch removed', 'success');
+}
+
+function removeCredential(index) {
+    credentials.splice(index, 1);
+    populateCredentialsList();
+    showNotification('Credential removed', 'success');
+}
+
+// Credential Management
+function addCredential() {
+    const usernameInput = document.getElementById('new-credential-username');
+    const passwordInput = document.getElementById('new-credential-password');
+    const username = usernameInput.value.trim();
+    const password = passwordInput.value.trim();
+    
+    if (!username || !password) {
+        showNotification('Please enter both username and password', 'error');
+        return;
+    }
+    
+    // Check for duplicates
+    if (agentConfig.credentials.some(cred => cred.username === username && cred.password === password)) {
+        showNotification('This credential already exists', 'warning');
+        return;
+    }
+    
+    // Also check against default credential
+    if (username === 'super' && password === 'sp-admin') {
+        showNotification('Default credential already exists', 'warning');
+        return;
+    }
+    
+    agentConfig.credentials.push({ username, password });
+    populateCredentialsList();
+    
+    // Clear inputs
+    usernameInput.value = '';
+    passwordInput.value = '';
+    
+    showNotification('Credential added successfully', 'success');
+}
+
+function removeCredential(index) {
+    agentConfig.credentials.splice(index, 1);
+    populateCredentialsList();
+    showNotification('Credential removed', 'success');
+}
+
+// Use populateCredentialsList() consistently instead of updateCredentialsList()
+
+// Seed Switch Management - modal functions removed, using inline form only
+
 function removeSeedSwitch(index) {
     seedSwitches.splice(index, 1);
-    updateSeedSwitchList();
     showNotification('Seed switch removed', 'success');
 }
 
@@ -274,12 +396,10 @@ function getCredentialName(credentialsId) {
 async function loadBaseConfigs() {
     try {
         const response = await fetch('/api/base-configs');
-        baseConfigs = await response.json();
-        updateBaseConfigSelect();
-        updateConfigPreview();
+        agentConfig.baseConfigs = await response.json();
     } catch (error) {
         console.error('Failed to load base configs:', error);
-        showNotification('Failed to load base configurations', 'error');
+        agentConfig.baseConfigs = {};
     }
 }
 
@@ -287,16 +407,29 @@ function updateBaseConfigSelect() {
     const select = document.getElementById('base-config-select');
     select.innerHTML = '';
     
-    Object.keys(baseConfigs).forEach(name => {
+    // Add existing configurations
+    Object.keys(agentConfig.baseConfigs).forEach(name => {
         const option = document.createElement('option');
         option.value = name;
         option.textContent = name;
         select.appendChild(option);
     });
     
+    // Add separator
+    const separator = document.createElement('option');
+    separator.disabled = true;
+    separator.textContent = '────────────────';
+    select.appendChild(separator);
+    
+    // Add upload option
+    const uploadOption = document.createElement('option');
+    uploadOption.value = '__upload__';
+    uploadOption.textContent = '📤 Upload Custom Configuration...';
+    select.appendChild(uploadOption);
+    
     // Set selected value from config
-    if (config.base_config_name && baseConfigs[config.base_config_name]) {
-        select.value = config.base_config_name;
+    if (agentConfig.config.base_config_name && agentConfig.baseConfigs[agentConfig.config.base_config_name]) {
+        select.value = agentConfig.config.base_config_name;
     }
 }
 
@@ -304,23 +437,38 @@ function updateConfigPreview() {
     const selectedConfig = document.getElementById('base-config-select').value;
     const preview = document.getElementById('config-preview');
     
-    if (selectedConfig && baseConfigs[selectedConfig]) {
-        preview.value = baseConfigs[selectedConfig];
+    if (selectedConfig === '__upload__') {
+        // Show upload modal
+        showModal('config-upload-modal');
+        // Reset to previous selection or first option
+        const select = document.getElementById('base-config-select');
+        const firstConfig = Object.keys(agentConfig.baseConfigs)[0];
+        if (firstConfig) {
+            select.value = firstConfig;
+            preview.value = agentConfig.baseConfigs[firstConfig];
+        }
+    } else if (selectedConfig && agentConfig.baseConfigs[selectedConfig]) {
+        preview.value = agentConfig.baseConfigs[selectedConfig];
     } else {
         preview.value = '';
     }
 }
 
-function handleFileSelect(event) {
+function handleUploadFileSelect(event) {
     const file = event.target.files[0];
     if (file) {
-        document.getElementById('config-name').value = file.name.replace('.txt', '');
+        document.getElementById('upload-config-filename').value = file.name;
+        // Auto-fill name if empty
+        const nameInput = document.getElementById('upload-config-name');
+        if (!nameInput.value) {
+            nameInput.value = file.name.replace('.txt', '');
+        }
     }
 }
 
-async function uploadBaseConfig() {
-    const nameInput = document.getElementById('config-name');
-    const fileInput = document.getElementById('config-file');
+async function uploadBaseConfigFromModal() {
+    const nameInput = document.getElementById('upload-config-name');
+    const fileInput = document.getElementById('upload-config-file');
     
     const name = nameInput.value.trim();
     const file = fileInput.files[0];
@@ -341,12 +489,22 @@ async function uploadBaseConfig() {
         
         if (response.ok) {
             await loadBaseConfigs();
+            
+            // Update base configs in agentConfig
+            agentConfig.baseConfigs[name] = await file.text();
+            
+            // Update the dropdown
+            updateBaseConfigSelect();
+            
+            // Select the newly uploaded config
             document.getElementById('base-config-select').value = name;
             updateConfigPreview();
             
-            // Clear form
+            // Clear form and close modal
             nameInput.value = '';
             fileInput.value = '';
+            document.getElementById('upload-config-filename').value = '';
+            closeModal('config-upload-modal');
             
             showNotification('Base configuration uploaded successfully', 'success');
         } else {
@@ -361,11 +519,17 @@ async function uploadBaseConfig() {
 // ZTP Process Management
 async function startZTP() {
     try {
+        // Validate required fields before starting
+        const preferredPassword = document.getElementById('preferred-password').value.trim();
+        if (!preferredPassword) {
+            showNotification('Cannot start ZTP: New Super Password is required', 'error');
+            switchTab('configuration');  // Switch to config tab
+            document.getElementById('preferred-password').focus();
+            return;
+        }
+        
         // Save config first
         await saveConfig();
-        
-        // Switch to monitoring tab immediately and set starting state locally
-        switchTab('monitoring');
         
         // Set UI to starting state immediately
         const statusElement = document.getElementById('ztp-status');
@@ -377,7 +541,7 @@ async function startZTP() {
             toggleButton.disabled = true;
         }
         
-        const response = await fetch('/api/ztp/start', {
+        const response = await fetch(getAgentApiUrl('/ztp/start'), {
             method: 'POST'
         });
         
@@ -416,7 +580,7 @@ async function startZTP() {
 
 async function stopZTP() {
     try {
-        const response = await fetch('/api/ztp/stop', {
+        const response = await fetch(getAgentApiUrl('/ztp/stop'), {
             method: 'POST'
         });
         
@@ -449,7 +613,7 @@ function startStatusUpdates() {
     statusUpdateInterval = setInterval(async () => {
         await updateStatus();
         await updateDeviceList();
-    }, 2000);
+    }, 1000);  // Faster UI updates - every 1 second
     
     // Update immediately
     updateStatus();
@@ -498,33 +662,67 @@ function toggleAutoRefresh() {
 
 async function updateStatus() {
     try {
-        const response = await fetch('/api/status');
+        const response = await fetch(getAgentApiUrl('/status'));
         const status = await response.json();
         
-        // Update status indicator
+        // Update status indicator (check if elements exist)
         const statusElement = document.getElementById('ztp-status');
+        const statusDisplay = document.getElementById('ztp-status-display');
         const toggleButton = document.getElementById('ztp-toggle');
         
-        if (status.running) {
-            statusElement.textContent = 'Running';
-            statusElement.className = 'status-indicator running';
-            toggleButton.textContent = 'Stop';
-        } else if (status.starting) {
-            statusElement.textContent = 'Starting...';
-            statusElement.className = 'status-indicator starting';
-            toggleButton.textContent = 'Starting...';
-            toggleButton.disabled = true;
-        } else {
-            statusElement.textContent = 'Stopped';
-            statusElement.className = 'status-indicator stopped';
-            toggleButton.textContent = 'Start';
-            toggleButton.disabled = false;
+        if (statusElement) {
+            if (status.running) {
+                statusElement.textContent = 'Running';
+                statusElement.className = 'status-indicator running';
+            } else if (status.starting) {
+                statusElement.textContent = 'Starting...';
+                statusElement.className = 'status-indicator starting';
+            } else {
+                statusElement.textContent = 'Stopped';
+                statusElement.className = 'status-indicator stopped';
+            }
         }
         
-        // Update counters
-        document.getElementById('switches-discovered').textContent = status.switches_discovered;
-        document.getElementById('switches-configured').textContent = status.switches_configured;
-        document.getElementById('aps-discovered').textContent = status.aps_discovered;
+        // Update dashboard status display
+        if (statusDisplay) {
+            statusDisplay.textContent = status.running ? 'Running' : 'Stopped';
+        }
+        
+        // Update start/stop button visibility
+        const startBtn = document.getElementById('start-ztp-btn');
+        const stopBtn = document.getElementById('stop-ztp-btn');
+        
+        if (startBtn && stopBtn) {
+            if (status.running) {
+                startBtn.style.display = 'none';
+                stopBtn.style.display = 'block';
+            } else {
+                startBtn.style.display = 'block';
+                stopBtn.style.display = 'none';
+            }
+        }
+        
+        if (toggleButton) {
+            if (status.running) {
+                toggleButton.textContent = 'Stop';
+                toggleButton.disabled = false;
+            } else if (status.starting) {
+                toggleButton.textContent = 'Starting...';
+                toggleButton.disabled = true;
+            } else {
+                toggleButton.textContent = 'Start';
+                toggleButton.disabled = false;
+            }
+        }
+        
+        // Update counters (check if elements exist)
+        const totalSwitches = document.getElementById('total-switches');
+        const totalAps = document.getElementById('total-aps');
+        const configuredDevices = document.getElementById('configured-devices');
+        
+        if (totalSwitches) totalSwitches.textContent = status.switches_discovered || 0;
+        if (totalAps) totalAps.textContent = status.aps_discovered || 0;
+        if (configuredDevices) configuredDevices.textContent = (status.switches_configured || 0) + (status.aps_configured || 0);
         
     } catch (error) {
         console.error('Failed to update status:', error);
@@ -533,11 +731,14 @@ async function updateStatus() {
 
 async function updateDeviceList() {
     try {
-        const response = await fetch('/api/devices');
+        const response = await fetch(getAgentApiUrl('/devices'));
         const devices = await response.json();
         
         const tbody = document.querySelector('#device-table tbody');
-        tbody.innerHTML = '';
+        
+        if (tbody) {
+            tbody.innerHTML = '';
+        }
         
         devices.forEach(device => {
             const row = document.createElement('tr');
@@ -552,40 +753,45 @@ async function updateDeviceList() {
             let deviceType = device.device_type === 'ap' ? 'AP' : device.device_type.charAt(0).toUpperCase() + device.device_type.slice(1);
             const typeDisplay = deviceType + (device.is_seed ? ' (seed)' : '');
             
-            // Format connection info (for APs)
-            const connectionDisplay = device.device_type === 'ap' && device.connected_switch
-                ? `${device.connected_switch}:${device.connected_port || '?'}`
-                : 'N/A';
-            
-            // Format tasks/ports column
-            let tasksPortsDisplay = '';
-            if (device.device_type === 'switch') {
-                // For switches, show AP ports and tasks
-                const parts = [];
-                if (device.ap_ports.length > 0) {
-                    parts.push(`AP Ports: ${device.ap_ports.join(', ')}`);
+            // Create configuration progress indicator
+            function createProgressIndicator(device) {
+                if (device.device_type === 'ap') {
+                    // APs have only 1 configuration phase: port configuration
+                    const steps = [
+                        { name: 'port_config', completed: device.configured === true }
+                    ];
+                    
+                    return steps.map(step => 
+                        step.completed ? '<span style="color: #00ff88;">●</span>' : '<span style="color: #666666;">●</span>'
+                    ).join(' ');
+                } else {
+                    // Switches have 2 configuration phases
+                    const steps = [
+                        { name: 'base_config', completed: device.base_config_applied === true },
+                        { name: 'device_config', completed: device.configured === true }
+                    ];
+                    
+                    return steps.map(step => 
+                        step.completed ? '<span style="color: #00ff88;">●</span>' : '<span style="color: #666666;">●</span>'
+                    ).join(' ');
                 }
-                if (device.tasks_completed.length > 0) {
-                    parts.push(device.tasks_completed.join('; '));
-                }
-                tasksPortsDisplay = parts.length > 0 ? parts.join(' | ') : 'Ready';
-            } else {
-                // For APs, show tasks
-                tasksPortsDisplay = device.tasks_completed.length > 0
-                    ? device.tasks_completed.join('; ')
-                    : 'Ready';
             }
             
+            const progressDisplay = createProgressIndicator(device);
+            
+            // Create row first, then set innerHTML for most cells and use DOM manipulation for progress
             row.innerHTML = `
                 <td><strong>${ipDisplay}</strong></td>
                 <td>${macDisplay}</td>
                 <td>${typeDisplay}</td>
                 <td>${device.model || 'Unknown'}</td>
                 <td>${device.serial || 'Unknown'}</td>
-                <td><span class="status-${device.status}">${device.status}</span></td>
-                <td>${connectionDisplay}</td>
-                <td class="tasks-cell">${tasksPortsDisplay}</td>
+                <td class="progress-cell"></td>
             `;
+            
+            // Set progress display with HTML
+            const progressCell = row.querySelector('.progress-cell');
+            progressCell.innerHTML = progressDisplay;
             
             // Add special styling for seed switches
             if (device.is_seed) {
@@ -597,7 +803,9 @@ async function updateDeviceList() {
                 row.classList.add('ssh-active');
             }
             
-            tbody.appendChild(row);
+            if (tbody) {
+                tbody.appendChild(row);
+            }
         });
         
     } catch (error) {
@@ -627,7 +835,7 @@ function refreshTopology() {
     svg.selectAll('*').remove();
     
     // Get devices and create topology
-    fetch('/api/devices')
+    fetch(getAgentApiUrl('/devices'))
         .then(response => response.json())
         .then(devices => {
             createTopologyDiagram(devices);
@@ -811,7 +1019,7 @@ function createTopologyDiagram(devices) {
     // Store node groups for position updates
     const node = nodeGroups;
     
-    // Add labels (hostname on top, IP below)
+    // Add labels (hostname on top, IP/MAC below based on device type)
     const hostnameLabel = svg.append('g')
         .selectAll('text')
         .data(nodes)
@@ -830,17 +1038,22 @@ function createTopologyDiagram(devices) {
         .attr('text-anchor', 'middle')
         .attr('dy', -25);
         
-    const ipLabel = svg.append('g')
+    const secondLabel = svg.append('g')
         .selectAll('text')
         .data(nodes)
         .enter().append('text')
         .text(d => {
-            // Only show IP if we have a real hostname (not just IP or literal "hostname")
-            const hostname = d.hostname;
-            if (hostname && hostname !== 'hostname' && hostname !== 'unknown' && hostname.trim() !== '' && hostname !== d.id) {
-                return d.id;
+            if (d.type === 'ap') {
+                // For APs, show MAC address instead of IP
+                return d.mac || 'Unknown MAC';
+            } else {
+                // For switches, only show IP if we have a real hostname (not just IP or literal "hostname")
+                const hostname = d.hostname;
+                if (hostname && hostname !== 'hostname' && hostname !== 'unknown' && hostname.trim() !== '' && hostname !== d.id) {
+                    return d.id;
+                }
+                return ''; // Don't show IP if hostname is missing or same as IP
             }
-            return ''; // Don't show IP if hostname is missing or same as IP
         })
         .attr('font-family', 'Courier New, monospace')
         .attr('font-size', '9px')
@@ -877,7 +1090,7 @@ function createTopologyDiagram(devices) {
             .attr('x', d => d.x)
             .attr('y', d => d.y);
             
-        ipLabel
+        secondLabel
             .attr('x', d => d.x)
             .attr('y', d => d.y);
     });
@@ -1565,3 +1778,995 @@ function createErrorContainer() {
     
     return container;
 }
+
+// Edge Agent Functions for Configuration
+async function refreshEdgeAgents() {
+    try {
+        console.log('Refreshing edge agents for dropdown...');
+        const response = await fetch('/api/edge-agents');
+        if (response.ok) {
+            availableEdgeAgents = await response.json();
+            console.log('Available edge agents:', availableEdgeAgents);
+            updateEdgeAgentSelect();
+            updateEdgeAgentStatus();
+        } else {
+            console.error('Failed to fetch edge agents:', response.status);
+        }
+    } catch (error) {
+        console.error('Failed to fetch edge agents:', error);
+    }
+}
+
+function updateEdgeAgentSelect() {
+    const select = document.getElementById('edge-agent-select');
+    if (!select) {
+        console.error('edge-agent-select element not found in DOM');
+        return;
+    }
+    console.log('Updating edge agent select dropdown with', availableEdgeAgents.length, 'agents');
+    select.innerHTML = '<option value="">Select an edge agent...</option>';
+    
+    availableEdgeAgents.forEach(agent => {
+        const option = document.createElement('option');
+        option.value = agent.agent_id;
+        option.textContent = `${agent.hostname} (${agent.agent_id}) - ${agent.network_subnet}`;
+        if (agent.agent_id === selectedEdgeAgentId) {
+            option.selected = true;
+        }
+        select.appendChild(option);
+        console.log('Added agent to dropdown:', agent.agent_id);
+    });
+    
+    if (availableEdgeAgents.length === 0) {
+        select.innerHTML = '<option value="">No edge agents connected</option>';
+        console.log('No edge agents available for dropdown');
+    }
+}
+
+function updateEdgeAgentStatus() {
+    const statusDiv = document.getElementById('edge-agent-status');
+    if (!statusDiv) {
+        console.error('edge-agent-status element not found in DOM');
+        return;
+    }
+    
+    const selectedAgent = availableEdgeAgents.find(p => p.agent_id === selectedEdgeAgentId);
+    
+    if (!selectedAgent) {
+        statusDiv.className = 'agent-status disconnected';
+        statusDiv.innerHTML = 'No edge agent selected';
+        return;
+    }
+    
+    const statusClass = selectedAgent.status === 'online' ? 'connected' : 'disconnected';
+    statusDiv.className = `agent-status ${statusClass}`;
+    
+    const lastSeen = new Date(selectedAgent.last_seen).toLocaleString();
+    statusDiv.innerHTML = `
+        <div>Status: <strong>${selectedAgent.status}</strong></div>
+        <div class="agent-info">
+            <div>Host: ${selectedAgent.hostname}</div>
+            <div>Network: ${selectedAgent.network_subnet}</div>
+            <div>Last seen: ${lastSeen}</div>
+        </div>
+    `;
+}
+
+function toggleAgentSettings() {
+    // Edge agents are now always enabled - this function is kept for compatibility
+    // Automatically refresh agents when called
+    refreshEdgeAgents();
+}
+
+
+
+// Dashboard Functions
+function startDashboardUpdates() {
+    // Update dashboard every 10 seconds
+    dashboardUpdateInterval = setInterval(async () => {
+        if (currentTab === 'monitoring') {
+            await updateDashboard();
+        }
+    }, 10000);
+    
+    // Update events every 5 seconds  
+    eventsUpdateInterval = setInterval(async () => {
+        if (currentTab === 'events') {
+            await updateEvents();
+        }
+    }, 5000);
+    
+    // Initial load
+    updateDashboard();
+}
+
+async function updateDashboard() {
+    try {
+        // Get ZTP status summary
+        const ztpResponse = await fetch('/api/ztp/status');
+        if (!ztpResponse.ok) {
+            console.error('Failed to fetch ZTP status:', ztpResponse.status);
+            return;
+        }
+        const ztpStatus = await ztpResponse.json();
+        console.log('ZTP Status:', ztpStatus);
+        
+        // Update dashboard stats
+        const totalSwitches = document.getElementById('total-switches');
+        const totalAps = document.getElementById('total-aps');
+        const configuredDevices = document.getElementById('configured-devices');
+        
+        if (totalSwitches) totalSwitches.textContent = ztpStatus.switches_discovered || 0;
+        if (totalAps) totalAps.textContent = ztpStatus.aps_discovered || 0;
+        if (configuredDevices) configuredDevices.textContent = ztpStatus.total_devices_configured || 0;
+        
+        // Get recent events
+        const eventsResponse = await fetch('/api/ztp/events?limit=5');
+        const recentEvents = await eventsResponse.json();
+        updateRecentEvents(recentEvents);
+        
+        // Get device inventory
+        const inventoryResponse = await fetch('/api/ztp/inventory');
+        const inventory = await inventoryResponse.json();
+        updateDashboardDeviceTable(inventory);
+        
+    } catch (error) {
+        console.error('Error updating dashboard:', error);
+    }
+}
+
+function updateRecentEvents(events) {
+    const container = document.getElementById('recent-events');
+    if (!events || events.length === 0) {
+        container.innerHTML = '<div class="no-events">No recent events</div>';
+        return;
+    }
+    
+    container.innerHTML = events.map(event => {
+        const time = new Date(event.timestamp).toLocaleTimeString();
+        return `
+            <div class="event-item ${event.event_type}">
+                <span class="event-type">${event.event_type}</span>
+                <span class="event-timestamp">${time}</span>
+                <div class="event-details">
+                    ${formatEventData(event.data)}
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function formatEventData(data) {
+    if (data.mac_address) {
+        return `Device: ${data.ip_address || 'Unknown IP'} (${data.device_type || 'Unknown'})`;
+    }
+    if (data.message) {
+        return data.message;
+    }
+    return JSON.stringify(data);
+}
+
+function updateDashboardDeviceTable(inventory) {
+    const tbody = document.querySelector('#dashboard-device-table tbody');
+    if (!inventory || Object.keys(inventory).length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="no-data">No devices discovered</td></tr>';
+        return;
+    }
+    
+    tbody.innerHTML = Object.entries(inventory).map(([mac, device]) => {
+        const lastSeen = device.last_seen ? new Date(device.last_seen).toLocaleString() : 'Unknown';
+        const statusClass = device.status === 'configured' ? 'success' : device.status === 'discovered' ? 'warning' : 'muted';
+        
+        return `
+            <tr>
+                <td>${device.ip_address || 'Unknown'}</td>
+                <td><code>${mac}</code></td>
+                <td>${device.device_type || 'Unknown'}</td>
+                <td>${device.model || 'Unknown'}</td>
+                <td><span class="status ${statusClass}">${device.status || 'Unknown'}</span></td>
+                <td>${device.agent_hostname || 'Unknown'}</td>
+                <td>${lastSeen}</td>
+            </tr>
+        `;
+    }).join('');
+}
+
+// Edge Agents Functions
+async function refreshAgents() {
+    try {
+        console.log('Fetching edge agents...');
+        const response = await fetch('/api/edge-agents');
+        const agents = await response.json();
+        console.log('Received edge agents:', agents.length, 'agents');
+        availableAgents = agents;
+        
+        // Always update the display when we have new agent data
+        // The updateAgentsDisplay function will handle cases where the tab isn't active
+        updateAgentsDisplay(agents);
+        
+    } catch (error) {
+        console.error('Error fetching edge agents:', error);
+    }
+}
+
+function updateAgentsDisplay(agents) {
+    const container = document.getElementById('agents-grid');
+    
+    // Only update if the container exists (agents tab is in DOM)
+    if (!container) {
+        console.log('Agents container not found - tab not active');
+        return;
+    }
+    
+    console.log('Updating agents display with', agents ? agents.length : 0, 'agents');
+    
+    if (!agents || agents.length === 0) {
+        container.innerHTML = '<div class="no-agents">No edge agents connected</div>';
+        return;
+    }
+    
+    container.innerHTML = agents.map(agent => {
+        const statusClass = agent.status === 'online' ? 'online' : 'offline';
+        const ztpRunning = agent.ztp_status?.running ? 'Running' : 'Stopped';
+        const ztpStatusClass = agent.ztp_status?.running ? 'ztp-status-running' : 'ztp-status-stopped';
+        const connectedAt = new Date(agent.connected_at).toLocaleString();
+        
+        return `
+            <div class="agent-card ${statusClass}">
+                <div class="agent-header">
+                    <div class="agent-id">${agent.agent_id}</div>
+                    <div class="agent-status ${statusClass}">${agent.status}</div>
+                </div>
+                
+                <div class="agent-info">
+                    <div class="agent-info-row">
+                        <span class="agent-info-label">Hostname:</span>
+                        <span class="agent-info-value">${agent.hostname}</span>
+                    </div>
+                    <div class="agent-info-row">
+                        <span class="agent-info-label">Network:</span>
+                        <span class="agent-info-value">${agent.network_subnet}</span>
+                    </div>
+                    <div class="agent-info-row">
+                        <span class="agent-info-label">Version:</span>
+                        <span class="agent-info-value">${agent.version}</span>
+                    </div>
+                    <div class="agent-info-row">
+                        <span class="agent-info-label">Connected:</span>
+                        <span class="agent-info-value">${connectedAt}</span>
+                    </div>
+                </div>
+                
+                <div class="agent-ztp-status">
+                    <div class="agent-info-row">
+                        <span class="agent-info-label">ZTP Status:</span>
+                        <span class="agent-info-value ${ztpStatusClass}">${ztpRunning}</span>
+                    </div>
+                    <div class="agent-info-row">
+                        <span class="agent-info-label">Devices:</span>
+                        <span class="agent-info-value">${agent.ztp_status?.devices_discovered || 0}</span>
+                    </div>
+                    <div class="agent-info-row">
+                        <span class="agent-info-label">Configured:</span>
+                        <span class="agent-info-value">${(agent.ztp_status?.switches_configured || 0) + (agent.ztp_status?.aps_configured || 0)}</span>
+                    </div>
+                </div>
+                
+                <div class="agent-actions">
+                    <button class="btn btn-primary" onclick="openAgentConfig('${agent.agent_id}')">Configure</button>
+                    <button class="btn btn-secondary" onclick="viewAgentLogs('${agent.agent_id}')">Logs</button>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// Events Functions
+async function updateEvents() {
+    try {
+        const limit = 50;
+        const filter = document.getElementById('event-filter')?.value || 'all';
+        const url = filter === 'all' ? `/api/ztp/events?limit=${limit}` : `/api/ztp/events?limit=${limit}&type=${filter}`;
+        
+        const response = await fetch(url);
+        const events = await response.json();
+        ztpEvents = events;
+        
+        displayEvents(events);
+    } catch (error) {
+        console.error('Error fetching events:', error);
+    }
+}
+
+function displayEvents(events) {
+    const container = document.getElementById('events-list');
+    
+    if (!events || events.length === 0) {
+        container.innerHTML = '<div class="no-events">No events found</div>';
+        return;
+    }
+    
+    container.innerHTML = events.map(event => {
+        const timestamp = new Date(event.timestamp).toLocaleString();
+        
+        return `
+            <div class="event-item-detailed ${event.event_type}">
+                <div class="event-header">
+                    <div>
+                        <span class="event-type">${event.event_type}</span>
+                        <span class="agent-id">Agent: ${event.agent_id}</span>
+                    </div>
+                    <span class="event-timestamp">${timestamp}</span>
+                </div>
+                <div class="event-data">
+                    ${JSON.stringify(event.data, null, 2)}
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function refreshEvents() {
+    updateEvents();
+}
+
+function clearEvents() {
+    // This would need a backend endpoint to clear events
+    console.log('Clear events - not implemented');
+}
+
+// Update existing functions to use edge agents instead of proxies
+function toggleAgentSettings() {
+    const enabled = document.getElementById('edge-agent-enabled').checked;
+    const settings = document.getElementById('agent-settings');
+    settings.style.display = enabled ? 'block' : 'none';
+    
+    if (enabled) {
+        refreshAgents();
+    }
+}
+
+// Per-Agent Configuration Functions
+function openAgentConfig(agentId) {
+    const agent = availableAgents.find(a => a.agent_id === agentId);
+    if (!agent) {
+        showNotification('Agent not found', 'error');
+        return;
+    }
+    
+    // Populate agent configuration modal
+    document.getElementById('agent-config-title').textContent = `Configure Agent: ${agent.agent_id}`;
+    document.getElementById('agent-config-hostname').textContent = agent.hostname;
+    document.getElementById('agent-config-network').textContent = agent.network_subnet;
+    document.getElementById('agent-config-status').textContent = agent.status;
+    
+    // Set current agent ID for configuration
+    document.getElementById('agent-config-modal').dataset.agentId = agentId;
+    
+    // Load current configuration for this agent (if any)
+    loadAgentConfiguration(agentId);
+    
+    showModal('agent-config-modal');
+}
+
+function viewAgentLogs(agentId) {
+    const agent = availableAgents.find(a => a.agent_id === agentId);
+    if (!agent) {
+        showNotification('Agent not found', 'error');
+        return;
+    }
+    
+    // Populate agent logs modal
+    document.getElementById('agent-logs-title').textContent = `Logs: ${agent.agent_id} (${agent.hostname})`;
+    document.getElementById('agent-logs-output').innerHTML = '<div class="loading">Loading agent logs...</div>';
+    
+    // Store agent ID for refresh functionality
+    document.getElementById('agent-logs-modal').dataset.agentId = agentId;
+    
+    showModal('agent-logs-modal');
+    
+    // Load logs for this specific agent
+    loadAgentLogs(agentId);
+}
+
+async function loadAgentConfiguration(agentId) {
+    // For now, use the global configuration as a starting point
+    // In the future, this could load agent-specific configuration from the backend
+    try {
+        const response = await fetch('/api/config');
+        const config = await response.json();
+        
+        // Populate the agent configuration form with current global settings
+        document.getElementById('agent-preferred-password').value = config.preferred_password || '';
+        document.getElementById('agent-management-vlan').value = config.management_vlan || 10;
+        document.getElementById('agent-wireless-vlans').value = (config.wireless_vlans || [20, 30, 40]).join(',');
+        document.getElementById('agent-ip-pool').value = config.ip_pool || '192.168.10.0/24';
+        document.getElementById('agent-gateway').value = config.gateway || '192.168.10.1';
+        document.getElementById('agent-dns-server').value = config.dns_server || '192.168.10.2';
+        document.getElementById('agent-poll-interval').value = config.poll_interval || 300;
+        
+        // Populate credentials for this agent
+        updateAgentCredentials(config.credentials || []);
+        
+        // Populate seed switches for this agent
+        updateAgentSeedSwitches(config.seed_switches || []);
+        
+        // Populate base configuration for this agent
+        updateAgentBaseConfigSelect();
+        if (config.base_config_name) {
+            document.getElementById('agent-base-config-select').value = config.base_config_name;
+            updateAgentConfigPreview();
+        }
+        
+    } catch (error) {
+        console.error('Failed to load agent configuration:', error);
+        showNotification('Failed to load agent configuration', 'error');
+    }
+}
+
+function updateAgentCredentials(credentials) {
+    const container = document.querySelector('.agent-credential-list');
+    
+    // Clear existing credentials except default
+    const existingCredentials = container.querySelectorAll('.credential-item:not(.default-credential)');
+    existingCredentials.forEach(item => item.remove());
+    
+    // Add additional credentials
+    credentials.forEach((cred, index) => {
+        // Skip default credential if it exists in the array
+        if (cred.username === 'super' && cred.password === 'sp-admin') {
+            return;
+        }
+        
+        const credDiv = document.createElement('div');
+        credDiv.className = 'credential-item';
+        credDiv.innerHTML = `
+            <span class="credential-display">${cred.username} / ${cred.password}</span>
+            <button class="btn-small" onclick="removeAgentCredential(this)">Remove</button>
+        `;
+        container.appendChild(credDiv);
+    });
+}
+
+function addAgentCredential() {
+    showModal('agent-credential-modal');
+}
+
+function saveAgentCredential() {
+    const username = document.getElementById('agent-modal-username').value;
+    const password = document.getElementById('agent-modal-password').value;
+    
+    if (!username || !password) {
+        showNotification('Please enter both username and password', 'error');
+        return;
+    }
+    
+    // Add credential to the list
+    const container = document.querySelector('.agent-credential-list');
+    const credDiv = document.createElement('div');
+    credDiv.className = 'credential-item';
+    credDiv.innerHTML = `
+        <span class="credential-display">${username} / ${password}</span>
+        <button class="btn-small" onclick="removeAgentCredential(this)">Remove</button>
+    `;
+    container.appendChild(credDiv);
+    
+    closeModal('agent-credential-modal');
+    showNotification('Credential added successfully', 'success');
+}
+
+function removeAgentCredential(button) {
+    button.parentElement.remove();
+    showNotification('Credential removed', 'success');
+}
+
+function updateAgentSeedSwitches(seedSwitches) {
+    const container = document.querySelector('#agent-seed-switches .agent-seed-switch-list');
+    container.innerHTML = '';
+    
+    seedSwitches.forEach((switchConfig, index) => {
+        const switchDiv = document.createElement('div');
+        switchDiv.className = 'seed-switch-item';
+        switchDiv.innerHTML = `
+            <span class="credential-display">${switchConfig.ip}</span>
+            <button class="btn-small" onclick="removeAgentSeedSwitch(${index})">Remove</button>
+        `;
+        container.appendChild(switchDiv);
+    });
+}
+
+function addAgentSeedSwitch() {
+    const ipInput = document.getElementById('agent-seed-switch-ip');
+    const ip = ipInput.value.trim();
+    
+    if (!ip) {
+        showNotification('Please enter an IP address', 'error');
+        return;
+    }
+    
+    // Validate IP address format
+    const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/;
+    if (!ipPattern.test(ip)) {
+        showNotification('Please enter a valid IP address', 'error');
+        return;
+    }
+    
+    // Get current switches and add new one
+    const container = document.querySelector('#agent-seed-switches .agent-seed-switch-list');
+    const switchDiv = document.createElement('div');
+    switchDiv.className = 'seed-switch-item';
+    switchDiv.innerHTML = `
+        <span class="credential-display">${ip}</span>
+        <button class="btn-small" onclick="this.parentElement.remove()">Remove</button>
+    `;
+    container.appendChild(switchDiv);
+    
+    // Clear input
+    ipInput.value = '';
+    showNotification('Seed switch added', 'success');
+}
+
+function updateAgentBaseConfigSelect() {
+    const select = document.getElementById('agent-base-config-select');
+    if (!select) return;
+    
+    select.innerHTML = '';
+    
+    Object.keys(baseConfigs).forEach(name => {
+        const option = document.createElement('option');
+        option.value = name;
+        option.textContent = name;
+        select.appendChild(option);
+    });
+    
+    // Auto-select the first option if available
+    if (Object.keys(baseConfigs).length > 0) {
+        select.selectedIndex = 0;
+        updateAgentConfigPreview();
+    }
+}
+
+function updateAgentConfigPreview() {
+    const selectedConfig = document.getElementById('agent-base-config-select').value;
+    const preview = document.getElementById('agent-config-preview');
+    
+    if (selectedConfig && baseConfigs[selectedConfig]) {
+        preview.value = baseConfigs[selectedConfig];
+    } else {
+        preview.value = '';
+    }
+}
+
+async function uploadAgentBaseConfig() {
+    const nameInput = document.getElementById('agent-config-name');
+    const fileInput = document.getElementById('agent-config-file');
+    
+    const name = nameInput.value.trim();
+    const file = fileInput.files[0];
+    
+    if (!name || !file) {
+        showNotification('Please enter a name and select a file', 'error');
+        return;
+    }
+    
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        const response = await fetch(`/api/base-configs?name=${encodeURIComponent(name)}`, {
+            method: 'POST',
+            body: formData
+        });
+        
+        if (response.ok) {
+            // Reload base configs to include the new one
+            await loadBaseConfigs();
+            updateAgentBaseConfigSelect();
+            document.getElementById('agent-base-config-select').value = name;
+            updateAgentConfigPreview();
+            
+            // Clear form
+            nameInput.value = '';
+            fileInput.value = '';
+            
+            showNotification('Base configuration uploaded successfully', 'success');
+        } else {
+            throw new Error('Upload failed');
+        }
+    } catch (error) {
+        console.error('Failed to upload base config:', error);
+        showNotification('Failed to upload base configuration', 'error');
+    }
+}
+
+// Handle file selection for agent config upload
+document.addEventListener('DOMContentLoaded', function() {
+    const fileInput = document.getElementById('agent-config-file');
+    if (fileInput) {
+        fileInput.addEventListener('change', function(event) {
+            const file = event.target.files[0];
+            if (file) {
+                document.getElementById('agent-config-name').value = file.name.replace('.txt', '');
+            }
+        });
+    }
+});
+
+async function saveAgentConfiguration() {
+    const modal = document.getElementById('agent-config-modal');
+    const agentId = modal.dataset.agentId;
+    
+    if (!agentId) {
+        showNotification('No agent selected', 'error');
+        return;
+    }
+    
+    try {
+        // Collect credentials
+        const credentials = [{ username: 'super', password: 'sp-admin' }]; // Always include default
+        const credentialElements = document.querySelectorAll('.agent-credential-list .credential-item:not(.default-credential) .credential-display');
+        credentialElements.forEach(element => {
+            const credText = element.textContent.trim();
+            const [username, password] = credText.split(' / ');
+            if (username && password) {
+                credentials.push({ username, password });
+            }
+        });
+        
+        // Collect seed switches
+        const seedSwitches = [];
+        const seedElements = document.querySelectorAll('#agent-seed-switches .seed-switch-item .credential-display');
+        seedElements.forEach(element => {
+            const ip = element.textContent.trim();
+            if (ip) {
+                seedSwitches.push({ ip });
+            }
+        });
+        
+        // Build configuration for this agent
+        const agentConfig = {
+            agent_id: agentId,
+            credentials: credentials,
+            preferred_password: document.getElementById('agent-preferred-password').value,
+            seed_switches: seedSwitches,
+            base_config_name: document.getElementById('agent-base-config-select').value,
+            management_vlan: parseInt(document.getElementById('agent-management-vlan').value),
+            wireless_vlans: document.getElementById('agent-wireless-vlans').value.split(',').map(v => parseInt(v.trim())),
+            ip_pool: document.getElementById('agent-ip-pool').value,
+            gateway: document.getElementById('agent-gateway').value,
+            dns_server: document.getElementById('agent-dns-server').value,
+            poll_interval: parseInt(document.getElementById('agent-poll-interval').value)
+        };
+        
+        // Send configuration to the specific agent
+        const response = await fetch(`/api/edge-agents/${agentId}/config`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(agentConfig)
+        });
+        
+        if (!response.ok) {
+            throw new Error('Failed to send configuration to agent');
+        }
+        
+        showNotification(`Configuration sent to agent ${agentId}`, 'success');
+        closeModal('agent-config-modal');
+        
+    } catch (error) {
+        console.error('Failed to save agent configuration:', error);
+        showNotification('Failed to save agent configuration', 'error');
+    }
+}
+
+async function startAgentZTP() {
+    const modal = document.getElementById('agent-config-modal');
+    const agentId = modal.dataset.agentId;
+    
+    if (!agentId) {
+        showNotification('No agent selected', 'error');
+        return;
+    }
+    
+    try {
+        // First save the configuration
+        await saveAgentConfiguration();
+        
+        // Then start ZTP on this specific agent
+        const response = await fetch(`/api/edge-agents/${agentId}/start-ztp`, {
+            method: 'POST'
+        });
+        
+        if (response.ok) {
+            showNotification(`ZTP started on agent ${agentId}`, 'success');
+            closeModal('agent-config-modal');
+        } else {
+            throw new Error('Failed to start ZTP on agent');
+        }
+        
+    } catch (error) {
+        console.error('Failed to start agent ZTP:', error);
+        showNotification('Failed to start ZTP on agent', 'error');
+    }
+}
+
+async function loadAgentLogs(agentId) {
+    try {
+        // Load logs specific to this agent
+        const response = await fetch(`/api/edge-agents/${agentId}/logs`);
+        const logs = await response.json();
+        
+        const logOutput = document.getElementById('agent-logs-output');
+        logOutput.innerHTML = '';
+        
+        if (!logs || logs.length === 0) {
+            logOutput.innerHTML = '<div class="no-logs">No logs available for this agent</div>';
+            return;
+        }
+        
+        logs.forEach(log => {
+            const logEntry = document.createElement('div');
+            logEntry.className = `log-entry log-level-${log.level}`;
+            logEntry.innerHTML = `
+                <span class="log-timestamp">[${new Date(log.timestamp).toLocaleString()}]</span>
+                <span class="log-message">${log.message}</span>
+            `;
+            logOutput.appendChild(logEntry);
+        });
+        
+        // Scroll to bottom
+        logOutput.scrollTop = logOutput.scrollHeight;
+        
+    } catch (error) {
+        console.error('Failed to load agent logs:', error);
+        const logOutput = document.getElementById('agent-logs-output');
+        logOutput.innerHTML = '<div class="error">Failed to load agent logs</div>';
+    }
+}
+
+// Dashboard Functions
+function startDashboardUpdates() {
+    if (dashboardUpdateInterval) return;
+    
+    dashboardUpdateInterval = setInterval(async () => {
+        if (currentTab === 'monitoring') {
+            await updateDashboardStatus();
+            await updateDashboardEvents();
+            await updateDashboardDevices();
+        }
+    }, 5000);
+    
+    // Update immediately
+    updateDashboardStatus();
+    updateDashboardEvents();
+    updateDashboardDevices();
+}
+
+async function updateDashboardStatus() {
+    try {
+        const response = await fetch(getAgentApiUrl('/status'));
+        const status = await response.json();
+        
+        // Update ZTP status display
+        const statusDisplay = document.getElementById('ztp-status-display');
+        const controlStatus = document.getElementById('ztp-control-status');
+        
+        if (status.running) {
+            statusDisplay.textContent = 'Running';
+            statusDisplay.className = 'stat-number status-running';
+            if (controlStatus) {
+                controlStatus.textContent = 'Active';
+                controlStatus.className = 'stat-number status-running';
+            }
+        } else if (status.starting) {
+            statusDisplay.textContent = 'Starting...';
+            statusDisplay.className = 'stat-number status-starting';
+            if (controlStatus) {
+                controlStatus.textContent = 'Starting';
+                controlStatus.className = 'stat-number status-starting';
+            }
+        } else {
+            statusDisplay.textContent = 'Stopped';
+            statusDisplay.className = 'stat-number status-stopped';
+            if (controlStatus) {
+                controlStatus.textContent = 'Ready';
+                controlStatus.className = 'stat-number status-stopped';
+            }
+        }
+        
+        // Update device counters
+        const totalSwitches = document.getElementById('total-switches');
+        const totalAps = document.getElementById('total-aps');
+        const configuredDevices = document.getElementById('configured-devices');
+        
+        if (totalSwitches) totalSwitches.textContent = status.switches_discovered || 0;
+        if (totalAps) totalAps.textContent = status.aps_discovered || 0;
+        if (configuredDevices) configuredDevices.textContent = (status.switches_configured || 0) + (status.aps_configured || 0);
+        
+    } catch (error) {
+        console.error('Failed to update dashboard status:', error);
+    }
+}
+
+async function updateDashboardEvents() {
+    try {
+        const response = await fetch(getAgentApiUrl('/events?limit=5'));
+        const events = await response.json();
+        
+        console.log('Dashboard events response:', events); // Debug log
+        
+        const eventsContainer = document.getElementById('recent-events');
+        eventsContainer.innerHTML = '';
+        
+        events.slice(0, 5).forEach(event => {
+            const eventDiv = document.createElement('div');
+            eventDiv.className = `event-item ${event.event_type}`;
+            
+            const timestamp = new Date(event.timestamp).toLocaleTimeString();
+            eventDiv.innerHTML = `
+                <div class="event-timestamp">${timestamp}</div>
+                <div class="event-type">${event.event_type}</div>
+                <div>${event.message || JSON.stringify(event.data)}</div>
+            `;
+            
+            eventsContainer.appendChild(eventDiv);
+        });
+        
+        if (events.length === 0) {
+            eventsContainer.innerHTML = '<div class="no-events">No recent events</div>';
+        }
+        
+    } catch (error) {
+        console.error('Failed to update dashboard events:', error);
+    }
+}
+
+async function updateDashboardDevices() {
+    try {
+        const response = await fetch(getAgentApiUrl('/devices'));
+        const devices = await response.json();
+        
+        const tbody = document.querySelector('#dashboard-device-table tbody');
+        tbody.innerHTML = '';
+        
+        devices.forEach(device => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>${device.ip}</td>
+                <td>${device.mac || 'Unknown'}</td>
+                <td>${device.device_type || 'Unknown'}</td>
+                <td>${device.model || 'Unknown'}</td>
+                <td class="status-${device.status}">${device.status}</td>
+                <td>${new Date().toLocaleTimeString()}</td>
+            `;
+            tbody.appendChild(row);
+        });
+        
+        if (devices.length === 0) {
+            const row = document.createElement('tr');
+            row.innerHTML = '<td colspan="6" style="text-align: center; color: #666;">No devices discovered</td>';
+            tbody.appendChild(row);
+        }
+        
+    } catch (error) {
+        console.error('Failed to update dashboard devices:', error);
+    }
+}
+
+// Events Functions
+async function refreshEvents() {
+    try {
+        const response = await fetch(getAgentApiUrl('/events?limit=100'));
+        const events = await response.json();
+        
+        console.log('Events page response:', events); // Debug log
+        
+        const eventsList = document.getElementById('events-list');
+        eventsList.innerHTML = '';
+        
+        events.forEach(event => {
+            const eventDiv = document.createElement('div');
+            eventDiv.className = `event-item-detailed ${event.event_type}`;
+            
+            const timestamp = new Date(event.timestamp).toLocaleString();
+            eventDiv.innerHTML = `
+                <div class="event-header">
+                    <div class="event-type">${event.event_type}</div>
+                    <div class="event-timestamp">${timestamp}</div>
+                </div>
+                <div class="event-message">${event.message || ''}</div>
+                <div class="event-data">${JSON.stringify(event.data, null, 2)}</div>
+            `;
+            
+            eventsList.appendChild(eventDiv);
+        });
+        
+        if (events.length === 0) {
+            eventsList.innerHTML = '<div class="no-events">No events found</div>';
+        }
+        
+    } catch (error) {
+        console.error('Failed to refresh events:', error);
+        showNotification('Failed to refresh events', 'error');
+    }
+}
+
+function clearEvents() {
+    const eventsList = document.getElementById('events-list');
+    eventsList.innerHTML = '<div class="no-events">Events cleared</div>';
+    showNotification('Events cleared', 'success');
+}
+
+function updateEvents() {
+    refreshEvents();
+}
+
+// Logs Functions
+async function refreshLogs() {
+    try {
+        const response = await fetch(getAgentApiUrl('/logs'));
+        const logs = await response.json();
+        
+        const logOutput = document.getElementById('log-output');
+        logOutput.innerHTML = '';
+        
+        logs.forEach(log => {
+            const logDiv = document.createElement('div');
+            logDiv.className = `log-entry log-level-${log.level}`;
+            
+            const timestamp = new Date(log.timestamp).toLocaleString();
+            logDiv.innerHTML = `
+                <span class="log-timestamp">[${timestamp}]</span>
+                <span class="log-level">[${log.level.toUpperCase()}]</span>
+                <span class="log-message">${log.message}</span>
+            `;
+            
+            logOutput.appendChild(logDiv);
+        });
+        
+        if (logs.length === 0) {
+            logOutput.innerHTML = '<div class="no-logs">No logs available</div>';
+        }
+        
+        // Scroll to bottom
+        logOutput.scrollTop = logOutput.scrollHeight;
+        
+    } catch (error) {
+        console.error('Failed to refresh logs:', error);
+        showNotification('Failed to refresh logs', 'error');
+    }
+}
+
+function clearLogs() {
+    const logOutput = document.getElementById('log-output');
+    logOutput.innerHTML = '<div class="no-logs">Logs cleared</div>';
+    showNotification('Logs cleared', 'success');
+}
+
+// Single-agent specific functions
+async function saveAndStartZTP() {
+    await saveConfig();
+    await startZTP();
+}
+
+async function toggleZTP() {
+    const statusDisplay = document.getElementById('ztp-status-display');
+    const isRunning = statusDisplay.textContent === 'Running';
+    
+    if (isRunning) {
+        await stopZTP();
+    } else {
+        await startZTP();
+    }
+}
+
+// Auto-refresh for different tabs (modified for single agent view)
+setInterval(async () => {
+    if (currentTab === 'monitoring') {
+        await updateStatus();
+        await updateDeviceList();
+    } else if (currentTab === 'events') {
+        await refreshEvents();
+    } else if (currentTab === 'logs') {
+        await refreshLogs();
+    }
+}, 10000); // Refresh every 10 seconds

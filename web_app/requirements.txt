@@ -6,10 +6,5 @@ pydantic>=2.5.0
 aiofiles>=23.2.0
 httpx>=0.25.0
 
-# Core ZTP Agent dependencies
-cmd2>=2.0.0
-prompt_toolkit>=3.0.0
-paramiko>=2.7.0
-smolagents>=0.1.0
-openai>=1.0.0
-pyyaml>=6.0
+# Core ZTP Agent dependencies (handled by main requirements.txt)
+# These are installed when pip install -e . is run

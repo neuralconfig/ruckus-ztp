@@ -1,0 +1,37 @@
+[Unit]
+Description=RUCKUS ZTP Edge Agent
+Documentation=https://github.com/neuralconfig/ruckus-ztp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ruckus-edge-agent
+Group=ruckus-edge-agent
+WorkingDirectory=/opt/ruckus-ztp-edge-agent
+
+# Environment
+Environment="PYTHONPATH=/opt/ruckus-ztp-edge-agent"
+EnvironmentFile=-/etc/ruckus-ztp-edge-agent/environment
+
+# Start command
+ExecStart=/opt/ruckus-ztp-edge-agent/venv/bin/python3 main.py
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/ruckus-ztp-edge-agent
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ruckus-ztp-edge-agent
+
+[Install]
+WantedBy=multi-user.target

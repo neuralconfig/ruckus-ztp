@@ -140,6 +140,53 @@ class SwitchConfiguration:
             self.connection.run_command("exit")  # Try to exit global config
             return False
 
+    def configure_super_user_password(self, password: str) -> bool:
+        """
+        Configure the super user password persistently.
+        This ensures the preferred password is saved in the switch configuration.
+        
+        Args:
+            password: New password for the super user
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Enter config mode
+            if not self.connection.enter_config_mode():
+                return False
+            
+            logger.info(f"Configuring super user password on switch {self.connection.ip}")
+            
+            # Configure super user password 
+            success, output = self.connection.run_command(f"username super password {password}")
+            if not success:
+                logger.error(f"Failed to set super user password: {output}")
+                self.connection.exit_config_mode(save=False)
+                return False
+            
+            # Set super user privilege level
+            success, output = self.connection.run_command("username super privilege 0")
+            if not success:
+                logger.error(f"Failed to set super user privilege: {output}")
+                self.connection.exit_config_mode(save=False)
+                return False
+            
+            # Note: Not setting enable password as per user request
+            # RUCKUS ICX switches don't require enable passwords for super user
+            
+            # Exit config mode and save
+            if not self.connection.exit_config_mode(save=True):
+                return False
+            
+            logger.info(f"Successfully configured super user password on switch {self.connection.ip}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error configuring super user password: {e}", exc_info=True)
+            self.connection.run_command("exit")  # Try to exit config mode
+            return False
+
     def configure_switch_port(self, port: str) -> bool:
         """
         Configure a port connected to another switch as a trunk port.
@@ -569,3 +616,8 @@ def set_poe_status(connection, port: str, status: PoEStatus) -> bool:
     """Set PoE status."""
     config_obj = SwitchConfiguration(connection)
     return config_obj.set_poe_status(port, status)
+
+def configure_super_user_password(connection, password: str) -> bool:
+    """Configure super user password persistently."""
+    config_obj = SwitchConfiguration(connection)
+    return config_obj.configure_super_user_password(password)
