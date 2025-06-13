@@ -484,12 +484,6 @@ def get_switch_details(switch_ip: str) -> Dict[str, Any]:
                         
                         details["interface_summary"] = interface_counts
                         details["port_count"] = sum(interface_counts.values())
-            else:
-                # Direct async execution
-                success, version_output = await _execute_ssh_command(switch_ip, username, password, "show version")
-                if success:
-                    details["reachable"] = True
-                    # Process version output...
         else:
             # Fallback to direct connection
             with switch:

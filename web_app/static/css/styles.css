@@ -1136,6 +1136,113 @@ tr:hover {
     font-size: 0.9em;
 }
 
+.ai-config-section {
+    margin-top: 15px;
+    padding-top: 15px;
+    border-top: 1px solid var(--border);
+}
+
+.api-key-input {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    position: relative;
+}
+
+.api-key-input input {
+    flex: 1;
+    padding: 8px 12px;
+    background: rgba(0, 0, 0, 0.5);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-white);
+    font-family: 'Courier New', monospace;
+    font-size: 0.9em;
+}
+
+.api-key-input input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 8px rgba(0, 255, 136, 0.3);
+}
+
+.ai-status {
+    margin-top: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.85em;
+}
+
+.ai-status .status-indicator {
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.75em;
+    font-weight: bold;
+}
+
+.ai-status .status-indicator.offline {
+    background: rgba(255, 68, 68, 0.2);
+    color: var(--error);
+    border: 1px solid var(--error);
+}
+
+.ai-status .status-indicator.online {
+    background: rgba(0, 255, 136, 0.2);
+    color: var(--success);
+    border: 1px solid var(--success);
+}
+
+/* Tooltip Styles */
+.tooltip {
+    position: relative;
+    display: inline-block;
+}
+
+.tooltip-icon {
+    cursor: help;
+    font-size: 1.1em;
+    color: var(--accent);
+    margin-left: 5px;
+}
+
+.tooltip-content {
+    visibility: hidden;
+    width: 350px;
+    background: rgba(0, 0, 0, 0.95);
+    color: var(--text-white);
+    text-align: left;
+    border-radius: 6px;
+    padding: 12px;
+    position: absolute;
+    z-index: 1000;
+    bottom: 125%;
+    left: 50%;
+    margin-left: -175px;
+    opacity: 0;
+    transition: opacity 0.3s;
+    border: 1px solid var(--accent);
+    font-size: 0.8em;
+    line-height: 1.4;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+}
+
+.tooltip-content::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    margin-left: -5px;
+    border-width: 5px;
+    border-style: solid;
+    border-color: var(--accent) transparent transparent transparent;
+}
+
+.tooltip:hover .tooltip-content {
+    visibility: visible;
+    opacity: 1;
+}
+
 .chat-messages {
     flex: 1;
     overflow-y: auto;

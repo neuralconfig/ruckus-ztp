@@ -464,6 +464,9 @@ class ZTPEdgeAgent:
                         elif msg_type == 'ztp_start':
                             self.logger.info(f"🚀 Handling ZTP start with configuration for message #{message_count}")
                             await self._handle_ztp_start(websocket, data)
+                        elif msg_type == 'ztp_stop':
+                            self.logger.info(f"🛑 Handling ZTP stop for message #{message_count}")
+                            await self._handle_ztp_stop(websocket, data)
                         else:
                             self.logger.warning(f"❓ Unknown message type '{msg_type}' in message #{message_count}")
                             
@@ -670,6 +673,38 @@ class ZTPEdgeAgent:
                     "request_id": data.get("request_id"),
                     "success": False,
                     "message": f"ZTP start failed: {str(e)}"
+                }
+                await websocket.send(json.dumps(response))
+            except Exception as send_error:
+                self.logger.error(f"❌ Failed to send error response: {send_error}")
+    
+    async def _handle_ztp_stop(self, websocket, data):
+        """Handle ZTP stop command from web app."""
+        try:
+            self.logger.info("🛑 Received ZTP stop command")
+            
+            # Stop the ZTP manager
+            await self.ztp_manager.stop()
+            
+            # Send acknowledgment
+            response = {
+                "type": "ztp_stop_response",
+                "request_id": data.get("request_id"),
+                "success": True,
+                "message": "ZTP stopped successfully"
+            }
+            await websocket.send(json.dumps(response))
+            self.logger.info("✅ ZTP stop completed successfully")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error handling ZTP stop: {e}")
+            # Send error response
+            try:
+                response = {
+                    "type": "ztp_stop_response",
+                    "request_id": data.get("request_id"),
+                    "success": False,
+                    "message": f"ZTP stop failed: {str(e)}"
                 }
                 await websocket.send(json.dumps(response))
             except Exception as send_error:

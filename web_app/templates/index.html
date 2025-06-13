@@ -242,34 +242,47 @@
                 <div class="chat-header">
                     <h2>AI Assistant for Network Operations</h2>
                     <p>Ask questions about your network or request configuration changes using natural language.</p>
+                    
+                    <div class="ai-config-section">
+                        <div class="form-group">
+                            <label for="openrouter-api-key">OpenRouter API Key:</label>
+                            <div class="api-key-input">
+                                <input type="password" id="openrouter-api-key" placeholder="Enter your OpenRouter API key" value="">
+                                <button class="btn btn-small" onclick="saveOpenRouterKey()">Save</button>
+                                <div class="tooltip">
+                                    <span class="tooltip-icon">ℹ️</span>
+                                    <div class="tooltip-content">
+                                        <strong>Available AI Tools:</strong><br>
+                                        <strong>🔍 Discovery & Status:</strong><br>
+                                        • get_network_summary - Network overview<br>
+                                        • get_switches - List all switches<br>
+                                        • get_switch_details - Switch info<br>
+                                        • get_ztp_status - ZTP process status<br>
+                                        • get_ap_inventory - Access points<br>
+                                        • get_lldp_neighbors - LLDP neighbors<br><br>
+                                        <strong>⚙️ Port Management:</strong><br>
+                                        • get_port_status - Port status/VLAN/PoE<br>
+                                        • change_port_vlan - Change port VLAN<br>
+                                        • set_port_status - Enable/disable port<br>
+                                        • set_poe_status - Control PoE power<br><br>
+                                        <strong>📋 Diagnostics:</strong><br>
+                                        • run_show_command - Execute show commands
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="ai-status" id="ai-status">
+                            <span class="status-indicator offline" id="ai-status-indicator">Offline</span>
+                            <span id="ai-status-text">Configure API key to enable AI assistant</span>
+                        </div>
+                    </div>
                 </div>
                 
                 <div class="chat-messages" id="chat-messages">
                     <div class="chat-message assistant">
                         <div class="message-content">
-                            <strong>AI Assistant:</strong> Hello! I'm your AI assistant for network operations. I have access to the following tools to help manage your network:
+                            <strong>AI Assistant:</strong> Hello! I'm your AI assistant for network operations. I can help you manage your network using natural language commands.
                             <br><br>
-                            <strong>🔍 Discovery & Status Tools:</strong>
-                            <ul>
-                                <li><code>get_network_summary</code> - Comprehensive network overview (switches, APs, ZTP status)</li>
-                                <li><code>get_switches</code> - List all available switches in the network</li>
-                                <li><code>get_switch_details</code> - Detailed info for a specific switch (hostname, model, ports)</li>
-                                <li><code>get_ztp_status</code> - Check ZTP process status and statistics</li>
-                                <li><code>get_ap_inventory</code> - View all discovered access points</li>
-                                <li><code>get_lldp_neighbors</code> - Show LLDP neighbors for a switch</li>
-                            </ul>
-                            <strong>Port Management Tools:</strong>
-                            <ul>
-                                <li><code>get_port_status</code> - Check port status, VLAN, and PoE state</li>
-                                <li><code>change_port_vlan</code> - Assign a port to a different VLAN</li>
-                                <li><code>set_port_status</code> - Enable or disable a port</li>
-                                <li><code>set_poe_status</code> - Control PoE power on a port</li>
-                            </ul>
-                            <strong>📋 Diagnostic Tools:</strong>
-                            <ul>
-                                <li><code>run_show_command</code> - Execute any 'show' command on a switch</li>
-                            </ul>
-                            <br>
                             <strong>Example requests:</strong>
                             <ul style="color: #88ff88;">
                                 <li>"Show me all switches in the network"</li>
@@ -279,14 +292,16 @@
                                 <li>"Show me the running config for switch 192.168.1.100"</li>
                             </ul>
                             <br>
+                            <strong>First, please configure your OpenRouter API key above to enable AI functionality.</strong>
+                            <br><br>
                             What would you like to know or configure?
                         </div>
                     </div>
                 </div>
                 
                 <div class="chat-input-container">
-                    <input type="text" id="chat-input" placeholder="Ask me anything about your network..." onkeypress="handleChatKeyPress(event)">
-                    <button class="btn primary" onclick="sendChatMessage()">Send</button>
+                    <input type="text" id="chat-input" placeholder="Ask me anything about your network..." onkeypress="handleChatKeyPress(event)" disabled>
+                    <button class="btn primary" onclick="sendChatMessage()" id="chat-send-btn" disabled>Send</button>
                 </div>
             </div>
         </div>

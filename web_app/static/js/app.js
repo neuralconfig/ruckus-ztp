@@ -37,6 +37,7 @@ document.addEventListener('DOMContentLoaded', function() {
 async function initializeApp() {
     await loadAgentConfig();
     await loadBaseConfigs();
+    await checkAIConfiguration();
     setupEventListeners();
     
     // Start with configuration tab active
@@ -1132,6 +1133,70 @@ function exportTopology() {
 }
 
 // AI Agent Functions
+async function saveOpenRouterKey() {
+    const apiKey = document.getElementById('openrouter-api-key').value.trim();
+    
+    if (!apiKey) {
+        showNotification('Please enter an OpenRouter API key', 'error');
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/api/${window.AGENT_UUID}/openrouter-key`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ api_key: apiKey })
+        });
+        
+        if (response.ok) {
+            showNotification('OpenRouter API key saved successfully', 'success');
+            updateAIStatus(true);
+            enableChatInput();
+        } else {
+            const errorData = await response.json();
+            throw new Error(errorData.detail || 'Failed to save API key');
+        }
+    } catch (error) {
+        console.error('Error saving OpenRouter API key:', error);
+        showNotification(`Error saving API key: ${error.message}`, 'error');
+    }
+}
+
+function updateAIStatus(online) {
+    const indicator = document.getElementById('ai-status-indicator');
+    const text = document.getElementById('ai-status-text');
+    
+    if (online) {
+        indicator.className = 'status-indicator online';
+        indicator.textContent = 'Online';
+        text.textContent = 'AI assistant ready';
+    } else {
+        indicator.className = 'status-indicator offline';
+        indicator.textContent = 'Offline';
+        text.textContent = 'Configure API key to enable AI assistant';
+    }
+}
+
+function enableChatInput() {
+    const chatInput = document.getElementById('chat-input');
+    const sendBtn = document.getElementById('chat-send-btn');
+    
+    chatInput.disabled = false;
+    sendBtn.disabled = false;
+    chatInput.placeholder = 'Ask me anything about your network...';
+}
+
+function disableChatInput() {
+    const chatInput = document.getElementById('chat-input');
+    const sendBtn = document.getElementById('chat-send-btn');
+    
+    chatInput.disabled = true;
+    sendBtn.disabled = true;
+    chatInput.placeholder = 'Configure OpenRouter API key to enable chat...';
+}
+
 function handleChatKeyPress(event) {
     if (event.key === 'Enter') {
         sendChatMessage();
@@ -1185,7 +1250,7 @@ async function sendChatMessageWebSocket(message) {
         
         // Create WebSocket connection
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const ws = new WebSocket(`${protocol}//${window.location.host}/ws/chat`);
+        const ws = new WebSocket(`${protocol}//${window.location.host}/ws/${window.AGENT_UUID}/chat`);
         
         // Helper function to safely resolve/reject
         const safeResolve = () => {
@@ -1290,7 +1355,7 @@ async function sendChatMessageSSE(message) {
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
     
     try {
-        const response = await fetch('/api/chat/stream', {
+        const response = await fetch(`/api/${window.AGENT_UUID}/chat/stream`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -2391,6 +2456,31 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 });
+
+async function checkAIConfiguration() {
+    try {
+        const response = await fetch(`/api/${window.AGENT_UUID}/config`);
+        if (response.ok) {
+            const config = await response.json();
+            const apiKey = config.openrouter_api_key;
+            
+            if (apiKey) {
+                // Mask the API key for display
+                const maskedKey = apiKey.substring(0, 8) + '...' + apiKey.substring(apiKey.length - 4);
+                document.getElementById('openrouter-api-key').value = maskedKey;
+                updateAIStatus(true);
+                enableChatInput();
+            } else {
+                updateAIStatus(false);
+                disableChatInput();
+            }
+        }
+    } catch (error) {
+        console.log('Could not load AI configuration:', error);
+        updateAIStatus(false);
+        disableChatInput();
+    }
+}
 
 async function saveAgentConfiguration() {
     const modal = document.getElementById('agent-config-modal');
